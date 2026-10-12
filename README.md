@@ -92,6 +92,76 @@ KINDLEWARDEN_URL=http://192.168.1.50:8080
 
 ---
 
+## Docker 部署
+
+不想在这台机器上装 Python 依赖、或者想把它丢到 NAS / 小主机上常驻：
+
+```bash
+git clone https://github.com/yszpatt/kindlewarden.git
+cd kindlewarden
+
+# ⚠️ 先把 docker-compose.yml 里的 KINDLEWARDEN_PUBLIC_HOST 改成
+#    你这台机器的**局域网 IP**（见下）
+docker compose up -d
+```
+
+控制台：**http://127.0.0.1:8080/**
+
+不用 compose 也行：
+
+```bash
+docker build -t kindlewarden .
+
+docker run -d --name kindlewarden \
+  -p 8080:8080 \
+  -e KINDLEWARDEN_PUBLIC_HOST=192.168.1.50 \
+  -v warden-data:/data \
+  --restart unless-stopped \
+  kindlewarden
+```
+
+### ⚠️ `KINDLEWARDEN_PUBLIC_HOST` 必须设对
+
+容器里自动探测到的是**容器自己的**地址（`172.17.x.x`），
+那个地址在局域网里根本不存在。Kindle 照着连的现象只是
+「页面无法显示」，很难联想到是地址猜错了 —— 所以这里要显式指定。
+
+可以写 `192.168.1.50`，也可以直接粘 `http://192.168.1.50:8080`，两种都认。
+
+查宿主机的局域网 IP：
+
+```bash
+ipconfig            # Windows
+ip route get 1.1.1.1    # Linux
+ipconfig getifaddr en0  # macOS
+```
+
+### 数据放在哪
+
+事件日志和 `panels.toml` 都在容器里的 `/data`，已挂成命名卷。
+
+> **必须持久化。** 事件溯源存储就是全部真相 ——
+> 卷丢了等于所有简报都没了。想看日志内容：
+> `docker compose exec kindlewarden warden board`
+
+### 镜像里为什么要装中文字体
+
+渲染器要画中文。少了字体服务能起来，但**一渲染就报
+「找不到可用的中文字体」**，而 Kindle 那边只是拉不到图 ——
+现象和「网络不通」一模一样，很难查。
+
+所以镜像装了 `fonts-noto-cjk`，并且**在构建时**就调真正的字体发现逻辑
+把选中的字体打出来 —— 缺字体在构建阶段就炸，而不是等第一次渲染。
+
+顺带这个容器也能干设备侧打包的活（它保留了源码布局）：
+
+```bash
+docker compose exec kindlewarden warden package --server http://192.168.1.50:8080
+docker compose cp kindlewarden:/app/dist ./dist
+```
+
+---
+
 ## 在 Kindle 上访问
 
 有两条路，取决于要不要越狱：
@@ -206,12 +276,17 @@ warden deploy
 | `warden alert "需要确认"` / `warden alert --clear` | 需要人介入的告警 |
 | `warden brief` | 列出简报（`--pin` / `--retract` 可操作） |
 | `warden board --json` | 查看看板原始数据 |
-| `warden package --server http://…` | 打包 Kindle 侧 KUAL 扩展 |
 | `warden seed-demo` | 灌样例内容审版面 |
 
 > ⚠️ **`warden serve` 默认监听 `0.0.0.0`（所有网卡）。**
 > 如果你加了 `--host 127.0.0.1`，本机测试一切正常，但 Kindle **永远连不上**，
 > 而现象只是「页面无法显示」—— 极难定位。`warden doctor` 就是为这类问题准备的。
+
+容器里跑同样的命令：
+
+```bash
+docker compose exec kindlewarden warden doctor
+```
 
 ---
 

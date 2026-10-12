@@ -1,0 +1,46 @@
+# kindlewarden 副屏 Host
+#
+#   docker compose up -d
+#   控制台  http://127.0.0.1:8080/
+#
+# ⚠️ 上线前**必须**改下面两处，否则 Kindle 连不上：
+#     1. KINDLEWARDEN_PUBLIC_HOST —— 填**宿主机的局域网 IP**
+#        容器里自动探测到的是容器自己的地址（172.x），那个地址在局域网里
+#        不存在。Kindle 照着连的现象只是「页面无法显示」，很难联想到是地址问题。
+#     2. ports 里的端口，和你填进插件的服务端地址保持一致
+#
+# 查宿主机的局域网 IP：
+#   Windows   ipconfig
+#   Linux     ip route get 1.1.1.1
+#   macOS     ipconfig getifaddr en0
+
+services:
+  kindlewarden:
+    build: .
+    image: kindlewarden:latest
+    container_name: kindlewarden
+    restart: unless-stopped
+
+    ports:
+      # 左边是宿主机端口，右边是容器内端口（改左边即可）
+      - "8080:8080"
+
+    environment:
+      # ⚠️ 改成你宿主机的局域网 IP。
+      #    这决定了启动横幅里打印的「Kindle 端 http://…」是哪个地址。
+      KINDLEWARDEN_PUBLIC_HOST: "192.168.1.50"
+
+    volumes:
+      # 事件日志 + panels.toml 都在这里。**必须持久化** ——
+      # 事件溯源存储就是全部真相，丢了等于所有简报都没了。
+      - warden-data:/data
+
+    # 日志用 json-file 就够，限制一下大小免得长年累月撑爆磁盘
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  warden-data:

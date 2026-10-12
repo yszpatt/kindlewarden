@@ -1,0 +1,36 @@
+# 构建镜像时不需要的东西 —— 让上下文尽量小，也避免把个人数据打进镜像。
+#
+# ⚠️ .runtime/ 必须排除：里面有**真实的事件日志**（你的简报内容、
+#    内网地址、设备序列号）。镜像层是可以被导出的，别把它带进去。
+
+.git
+.gitignore
+.gitattributes
+
+# 运行时数据（个人内容）
+.runtime/
+
+# 开发环境与缓存
+.tools/
+.uv-cache/
+.pytest-tmp/
+.pytest_cache/
+pytest-cache-files-*/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 生成物
+dist/
+mockups/out/
+
+# 测试与文档：镜像里跑不到，也不影响运行
+tests/
+docs/
+mockups/
+*.md.bak
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

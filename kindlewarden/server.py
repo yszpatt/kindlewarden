@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import socket
 import sys
 import threading
@@ -1053,13 +1054,35 @@ def _check_page(*, client_ip: str, ua: str, port: int,
 """
 
 
+#: 用这个环境变量**覆盖**「Kindle 该访问哪个地址」。
+#:
+#: 为什么需要：容器里自动探测拿到的是**容器自己的**地址（172.17.x.x），
+#: 那个地址在局域网里根本不存在 —— Kindle 照着连必然失败，
+#: 而现象只是「页面无法显示」，很难联想到是地址猜错了。
+#: 所以容器部署时要显式告诉它宿主机的地址：
+#:
+#:     docker run -e KINDLEWARDEN_PUBLIC_HOST=192.168.1.50 ...
+PUBLIC_HOST_ENV = "KINDLEWARDEN_PUBLIC_HOST"
+
+
 def lan_addresses() -> list[str]:
     """枚举本机局域网 IPv4，**真实出站网卡排在第一位**。
 
     用途是告诉用户「Kindle 上到底该打开哪个地址」。
     打印 ``<本机 LAN IP>`` 这种占位符是没用的，会掩盖两类真实故障：
     服务只监听了 127.0.0.1，以及把虚拟网卡地址推荐给了用户。
+
+    若设了 ``KINDLEWARDEN_PUBLIC_HOST``，直接用它（容器部署必需，
+    见 ``PUBLIC_HOST_ENV`` 的说明）。此时**只返回那一个地址** ——
+    自动探测出来的容器地址是错的，列在旁边只会让人挑错。
     """
+    override = (os.environ.get(PUBLIC_HOST_ENV) or "").strip()
+    if override:
+        # 允许写成 "http://1.2.3.4:8080" 或 "1.2.3.4"，都取主机名部分
+        override = override.split("//")[-1].split("/")[0].split(":")[0]
+        if override:
+            return [override]
+
     ordered: list[str] = []
 
     # 出站路由选择的源地址 = 内核认定的真实网卡。这是最可靠的判据。

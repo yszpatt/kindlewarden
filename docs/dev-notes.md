@@ -42,6 +42,64 @@ python -m kindlewarden.cli seed-demo
 
 ---
 
+## Docker 构建里的几个决定
+
+### 为什么是 `pip install -e .` 而不是 `pip install .`
+
+``cli.py`` 用 ``Path(__file__).resolve().parent.parent`` 定位**仓库根目录**，
+再去找 ``koplugin/`` 和 ``kindle/`` —— ``warden package`` / ``warden deploy``
+要靠它们生成设备侧的安装包。
+
+装成普通 wheel 的话包会进 site-packages，那个相对路径就指向
+``site-packages``，这两个命令直接失败。所以镜像里**保留源码布局 + 可编辑安装**：
+既拿到入口脚本和依赖，又保住路径。
+
+### 字体发现为什么要**兜底扫描**，而不只是列路径
+
+原来 ``FontBook.CANDIDATES`` 里只有一条 Linux 路径
+（``/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc``）。
+但各家发行版放 Noto CJK 的位置不一样：
+
+```
+Debian/Ubuntu   /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+某些发行版       /usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc
+语言子集         NotoSansCJKsc-Regular.otf / -jp / -kr / -tc …
+```
+
+**把路径穷举一遍既列不全也维护不动**，而容器里没有交互终端可以现场排查 ——
+找不到字体就直接渲染失败，现象还和「网络不通」长得一模一样。
+
+所以加了按**文件名模式**的兜底扫描（``FONT_PATTERNS`` + ``FONT_DIRS``），
+并补了"只有常规体时粗体退回常规体"（wqy-zenhei 这类只有一个字重）。
+
+⚠️ 这条兜底路径**在开发机上永远不会被执行**（Windows 上永远命中 msyh
+快速路径）。"只有生产环境才跑的分支"是最容易长期带着 bug 的那类代码，
+所以 ``tests/test_fonts.py`` 把 ``FONT_DIRS`` 指到临时目录、清空
+``CANDIDATES``，人为造出各种 Linux 布局来验它。
+
+### 字体检查放在**构建时**，而且调真正的发现逻辑
+
+```dockerfile
+RUN pip install -e . \
+ && python -c "from kindlewarden.render import FontBook; fb = FontBook(); …"
+```
+
+不是 ``test -f 某个具体路径`` —— 写死路径换个基础镜像就失效。
+让代码自己认，并把选中的字体打出来：缺字体在**构建阶段**就炸，
+而不是等第一次渲染才发现。
+
+### 容器里的"本机地址"是错的
+
+``lan_addresses()`` 自动探测到的会是**容器自己的**地址（172.17.x.x），
+那个地址在局域网里不存在。Kindle 照着连的现象只是「页面无法显示」，
+很难联想到是地址猜错了。
+
+所以加了 ``KINDLEWARDEN_PUBLIC_HOST`` 环境变量覆盖，并且**只返回那一个地址**
+—— 把自动探测的结果列在旁边只会让人挑错。它接受
+``192.168.1.50`` / ``http://192.168.1.50:8080`` 等几种写法。
+
+---
+
 ## 沙箱注意事项
 
 `.tools/sitecustomize.py` 里有两个**纯环境问题**的垫片，

@@ -95,6 +95,7 @@ F_STATUS = 26
 class FontBook:
     """中文字体解析与缓存。字体只存在于 host，**不需要传到 Kindle 上**。"""
 
+    #: 明确列出的候选（先查这些，命中即用）。
     CANDIDATES = [
         (r"C:\Windows\Fonts\Noto Sans SC (TrueType).otf",
          r"C:\Windows\Fonts\Noto Sans SC Bold (TrueType).otf"),
@@ -102,7 +103,32 @@ class FontBook:
         (r"C:\Windows\Fonts\simhei.ttf", r"C:\Windows\Fonts\simhei.ttf"),
         ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
          "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+         "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc"),
         ("/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/PingFang.ttc"),
+    ]
+
+    #: 兜底：按**文件名**在常见字体目录里找。
+    #:
+    #: 为什么要兜底而不是把路径列全：各家发行版放 Noto CJK 的位置不一样
+    #: （Debian 在 opentype/noto，有的在 noto-cjk，语言子集还叫
+    #: NotoSansCJKsc-*）。**把路径穷举一遍既列不全也维护不动**，
+    #: 而容器里没有交互式终端可以现场排查 —— 找不到字体就直接渲染失败。
+    #: 所以按文件名模式去找，命中概率高得多。
+    FONT_DIRS = [
+        "/usr/share/fonts", "/usr/local/share/fonts",
+        "/usr/share/fonts/opentype", "/usr/share/fonts/truetype",
+    ]
+    #: (正则, 是否粗体)。顺序即优先级。
+    FONT_PATTERNS = [
+        (r"NotoSansCJK.*-Regular\.(ttc|otf|ttf)$", False),
+        (r"NotoSansCJK.*-Bold\.(ttc|otf|ttf)$", True),
+        (r"NotoSansSC-Regular\.(ttf|otf)$", False),
+        (r"NotoSansSC-Bold\.(ttf|otf)$", True),
+        (r"SourceHanSans.*-Regular\.(ttc|otf|ttf)$", False),
+        (r"SourceHanSans.*-Bold\.(ttc|otf|ttf)$", True),
+        (r"wqy-zenhei\.ttc$", False),
+        (r"wqy-microhei\.ttc$", False),
     ]
 
     def __init__(self, regular: str | None = None, bold: str | None = None):
@@ -113,13 +139,58 @@ class FontBook:
         self._cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 
     @classmethod
+    def _scan(cls) -> list[Path]:
+        """把常见字体目录下的字体文件列出来（只找一层，不递归整棵树）。"""
+        found: list[Path] = []
+        for d in cls.FONT_DIRS:
+            p = Path(d)
+            if not p.is_dir():
+                continue
+            try:
+                found.extend(x for x in p.rglob("*") if x.is_file())
+            except OSError:
+                continue
+        return found
+
+    @classmethod
     def _discover(cls) -> tuple[str, str]:
         for reg, bold in cls.CANDIDATES:
             if Path(reg).exists() and Path(bold).exists():
                 return reg, bold
+
+        # 兜底：按文件名模式扫
+        files = cls._scan()
+        by_pattern: dict[str, str] = {}
+        for path in files:
+            name = path.name
+            for pattern, _is_bold in cls.FONT_PATTERNS:
+                if re.search(pattern, name, re.I) and pattern not in by_pattern:
+                    by_pattern[pattern] = str(path)
+
+        regular = None
+        bold = None
+        for pattern, is_bold in cls.FONT_PATTERNS:
+            hit = by_pattern.get(pattern)
+            if not hit:
+                continue
+            if is_bold and bold is None:
+                bold = hit
+            elif not is_bold and regular is None:
+                regular = hit
+            if regular and bold:
+                break
+
+        # 只有常规体（比如 wqy-zenhei）时，粗体退回常规体 —— 总比报错强
+        if regular and not bold:
+            bold = regular
+        if regular:
+            return regular, bold
+
         raise RuntimeError(
-            "找不到可用的中文字体。请安装思源黑体/Noto Sans SC，"
+            "找不到可用的中文字体。请安装 Noto Sans CJK / 思源黑体"
+            "（Debian/Ubuntu: apt-get install fonts-noto-cjk），"
             "或用 FontBook(regular=..., bold=...) 显式指定。"
+            f"已扫描的目录：{', '.join(cls.FONT_DIRS)}"
         )
 
     def get(self, size: int, bold: bool = False) -> ImageFont.FreeTypeFont:

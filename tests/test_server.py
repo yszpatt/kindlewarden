@@ -82,3 +82,57 @@ def test_lan_addresses_excludes_loopback():
     for addr in lan_addresses():
         assert not addr.startswith("127.")
         assert addr.count(".") == 3
+
+
+# ---------------------------------------------------------------- 容器部署
+#
+# 容器里自动探测到的是**容器自己的**地址（172.17.x.x），
+# 那个地址在局域网里根本不存在 —— Kindle 照着连必然失败，
+# 而现象只是「页面无法显示」，很难联想到是地址猜错了。
+# 所以容器部署要能显式指定对外的地址。
+
+
+def test_public_host_env_overrides_autodetection(monkeypatch):
+    """``KINDLEWARDEN_PUBLIC_HOST`` 要能覆盖自动探测。"""
+    from kindlewarden.server import PUBLIC_HOST_ENV
+
+    monkeypatch.setenv(PUBLIC_HOST_ENV, "192.168.1.50")
+    assert lan_addresses() == ["192.168.1.50"]
+
+
+def test_public_host_env_accepts_a_full_url(monkeypatch):
+    """写成完整 URL 也要认（用户很自然会从地址栏复制）。"""
+    from kindlewarden.server import PUBLIC_HOST_ENV
+
+    for value, want in (("http://10.0.0.7:8080", "10.0.0.7"),
+                        ("https://example.com", "example.com"),
+                        ("10.0.0.7:8080", "10.0.0.7"),
+                        ("  10.0.0.7  ", "10.0.0.7"),
+                        ("http://10.0.0.7/rev", "10.0.0.7")):
+        monkeypatch.setenv(PUBLIC_HOST_ENV, value)
+        assert lan_addresses() == [want], f"{value!r} → {lan_addresses()}"
+
+
+def test_public_host_env_empty_falls_back_to_autodetect(monkeypatch):
+    """空值等于没设 —— 不能因为设了个空串就一个地址都不推荐。"""
+    from kindlewarden.server import PUBLIC_HOST_ENV
+
+    monkeypatch.setenv(PUBLIC_HOST_ENV, "   ")
+    addrs = lan_addresses()
+    assert all(not a.startswith("127.") for a in addrs)
+    # 本机至少有一个非回环地址（否则这条断言本身没意义，下面会说明）
+    if addrs:
+        assert " " not in addrs[0]
+
+
+def test_banner_uses_the_overridden_host(monkeypatch):
+    """覆盖之后，启动横幅里推荐给 Kindle 的就是那个地址。"""
+    from kindlewarden.server import PUBLIC_HOST_ENV
+
+    monkeypatch.setenv(PUBLIC_HOST_ENV, "192.168.1.50")
+    cfg = Config()
+    text = "\n".join(startup_banner(host="0.0.0.0", port=8080,
+                                    lan=lan_addresses(), cfg=cfg))
+    assert "http://192.168.1.50:8080/rev" in text
+    # 容器地址不该出现在推荐位
+    assert "172.17." not in text.split("提示")[0]
