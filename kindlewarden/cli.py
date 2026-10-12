@@ -22,7 +22,7 @@ from pathlib import Path
 
 from .config import Config, load as load_config
 
-DEFAULT_BASE = "http://127.0.0.1:8080"
+DEFAULT_BASE = "http://127.0.0.1:8577"
 
 
 # ---------------------------------------------------------------- HTTP 客户端
@@ -95,7 +95,7 @@ show_clock = false
 
 [server]
 host          = "0.0.0.0"
-port          = 8080
+port          = 8577
 heartbeat_min = 10    # 状态不变时也强制重渲染一次，证明"还活着"
 poll_idle_s   = 300   # 空闲时告诉 Kindle 多久后再来
 poll_active_s = 30    # 有新内容时告诉 Kindle 多久后再来
@@ -389,8 +389,72 @@ def _try_connect(host: str, port: int, timeout: float = 1.5) -> tuple[bool, str]
         return False, f"{type(exc).__name__}: {exc}"
 
 
-def _firewall_rule_exists(name: str = "kindlewarden") -> bool | None:
-    """查防火墙规则。返回 None 表示查不了（非 Windows 或没有权限）。"""
+def _firewall_rules_from_registry() -> list[str] | None:
+    """从注册表读出所有防火墙规则（原始字符串）。None 表示读不到。
+
+    ⚠️ **这是唯一可靠的判据** —— 不要改用 ``Get-NetFirewallRule``。
+
+    踩过一次：沙箱/受限环境里 ``Get-NetFirewallRule`` 会返回**空集**
+    而不报错（实测 ``@(Get-NetFirewallRule).Count`` 是 0，
+    而注册表里有 776 条规则）。基于它做的任何判断都是假的 ——
+    「没有规则」和「读不到规则」分不清，于是 `doctor` 会谎报
+    「没有防火墙放行规则」，把一个配置正确的人引去瞎折腾。
+
+    ``netsh`` 在同样环境下也可能什么都不返回。
+
+    注册表读取不需要提权、也不经过 WMI。
+
+    ⚠️ 路径**不能带 hive 前缀**（不要写成 ``HKLM`` 加反斜杠再加 ``SYSTEM``）。
+
+    ``winreg.OpenKey`` 的第一个参数已经是 ``HKEY_LOCAL_MACHINE`` 了，
+    再在路径里写一遍 hive 名，就变成找"HKLM 键下面的 SYSTEM"——
+    而 HKLM 下面并没有一个叫 HKLM 的子键，于是直接抛 OSError。
+
+    这个 bug **原本就潜伏在 `cmd_firewall` 里**（同一段代码是从那儿提出来的）：
+    它 catch 了 OSError 就返回「没有规则」，所以现象是
+    **`warden firewall` 永远认为规则不存在**、每次都重建一遍。
+    隐藏了很久是因为"重复建一条同名规则"本身不报错。
+    """
+    if os.name != "nt":
+        return None
+    key = (r"SYSTEM\CurrentControlSet\Services\SharedAccess"
+           r"\Parameters\FirewallPolicy\FirewallRules")
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+            _, n, _ = winreg.QueryInfoKey(k)
+            out: list[str] = []
+            for i in range(n):
+                try:
+                    _name, val, _ = winreg.EnumValue(k, i)
+                except OSError:
+                    continue
+                out.append(str(val))
+            return out
+    except OSError:
+        return None
+
+
+def _firewall_rule_exists(name: str = "kindlewarden",
+                          port: int | None = None) -> bool | None:
+    """查防火墙规则。返回 None 表示查不了（非 Windows 或没有权限）。
+
+    判据顺序：**注册表优先**，netsh 只作兜底。
+
+    为什么注册表优先：它是这三个途径里唯一在受限环境下还靠谱的
+    （见 ``_firewall_rules_from_registry`` 的说明）。
+    以前这里只查 netsh —— 于是在沙箱里 `doctor` 会谎报「没有放行规则」，
+    而实际上规则好端端地在注册表里。
+    """
+    rules = _firewall_rules_from_registry()
+    if rules:
+        for val in rules:
+            if name in val:
+                if port is None or f"LPort={port}" in val:
+                    return True
+        return False
+
+    # 注册表读不到（权限/非 Windows）→ 退回 netsh
     import subprocess
     if os.name != "nt":
         return None
@@ -587,8 +651,8 @@ def cmd_firewall(args: argparse.Namespace, cfg: Config) -> int:
     ------------------
     实测踩过：**服务在本机一切正常，Kindle 却死活连不上。**
 
-        netstat:  0.0.0.0:8080 LISTENING      ← 绑定正确
-        netsh:    没有任何针对 8080 的入站规则  ← 走默认动作 = 阻止
+        netstat:  0.0.0.0:8577 LISTENING      ← 绑定正确
+        netsh:    没有任何针对 8577 的入站规则  ← 走默认动作 = 阻止
 
     Windows 防火墙默认**阻止入站**。没有放行规则时：
       * 本机访问 ``127.0.0.1`` 正常（走回环，不经防火墙）
@@ -635,31 +699,14 @@ def cmd_firewall(args: argparse.Namespace, cfg: Config) -> int:
         print("  其它平台请自行放行入站端口。")
         return 1
 
-    # 判断"是否已有规则"用**注册表**，不用 Get-NetFirewallRule。
+    # 判断"是否已有规则"统一走 `_firewall_rule_exists`（注册表优先）。
     #
-    # ⚠️ 踩过一次：沙箱/受限环境里 ``Get-NetFirewallRule`` 会返回**空集**
-    #    而不报错（实测 ``@(Get-NetFirewallRule).Count`` 是 0，
-    #    而注册表里有 776 条规则）。基于它做的任何判断都是假的 ——
-    #    "没有规则"和"读不到规则"分不清。
-    #
-    # 注册表读取不需要提权、也不经过 WMI，是可靠的判据。
+    # 这里以前是**另一份实现**（嵌套函数），和 `doctor` 各查各的 ——
+    # 而两份用的判据还不一样（这份查注册表、`doctor` 查 netsh），
+    # 于是同一条规则两个命令结论相反。
+    # 现在只有一处实现，不会再出现"一个说有、一个说没有"。
     def _rule_exists() -> bool:
-        key = (r"HKLM\SYSTEM\CurrentControlSet\Services\SharedAccess"
-               r"\Parameters\FirewallPolicy\FirewallRules")
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
-                _, n, _ = winreg.QueryInfoKey(k)
-                for i in range(n):
-                    try:
-                        name_, val, _ = winreg.EnumValue(k, i)
-                    except OSError:
-                        continue
-                    if "kindlewarden" in str(val) or str(port) in str(name_):
-                        if "kindlewarden" in str(val):
-                            return True
-        except OSError:
-            pass
+        return _firewall_rule_exists(name="kindlewarden", port=port) is True
         return False
 
     if _rule_exists() and not args.force:
@@ -820,15 +867,20 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
                 problems.append(f"{addr} 未绑定")
 
     # ---- 3. 防火墙
-    fw = _firewall_rule_exists()
+    #
+    # ⚠️ 必须带上**端口**：换过端口之后，旧端口上的放行规则还在，
+    #    只按名字查会得到「有规则」这个**错误结论**。
+    #    实测就是换到 8577 时，8080 的规则还在，而新端口其实没放行。
+    fw = _firewall_rule_exists(port=port)
     if fw is True:
-        print("  [ OK ] 防火墙规则 kindlewarden 存在")
+        print(f"  [ OK ] 防火墙规则 kindlewarden 放行了 {port}")
     elif fw is False:
-        print("  [WARN] 没有 kindlewarden 的防火墙放行规则")
+        print(f"  [WARN] 没有放行 {port} 的防火墙规则")
         print(f"         以**管理员**身份运行：")
-        print(f'         New-NetFirewallRule -DisplayName "kindlewarden" '
+        print(f"         warden firewall --any-profile")
+        print(f'         （等价于 New-NetFirewallRule -DisplayName "kindlewarden" '
               f"-Direction Inbound -Protocol TCP -LocalPort {port} "
-              f"-Action Allow -Profile Private")
+              f"-Action Allow -Profile Private）")
     else:
         print("  [ -- ] 防火墙状态无法查询（跳过）")
 
@@ -1078,7 +1130,7 @@ def cmd_deploy(args: argparse.Namespace, cfg: Config) -> int:
             raise SystemExit(
                 "打包产物里的插件和源文件**不一致** —— dist 里是旧版本。\n"
                 "先重新打包再部署：\n"
-                "  warden package --server http://<本机IP>:8080\n"
+                "  warden package --server http://<本机IP>:8577\n"
                 "  warden deploy\n"
                 "\n"
                 "（这条检查是为了防止「改了代码却部署了旧版本」——\n"
@@ -1295,7 +1347,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("package", help="打包 Kindle 侧（KOReader 插件 + shell 客户端）")
     s.add_argument("--server", required=True,
-                   help="副屏服务地址，例如 http://192.168.1.50:8080")
+                   help="副屏服务地址，例如 http://192.168.1.50:8577")
     s.add_argument("--out", default="dist/kindlewarden")
     s.set_defaults(func=cmd_package)
 

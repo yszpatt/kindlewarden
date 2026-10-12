@@ -163,7 +163,7 @@ def test_second_instance_refuses_the_occupied_port(tmp_path):
 
     但 Windows 上 ``SO_REUSEADDR`` 的语义是 **允许两个 socket 绑同一端口**
     （Linux 只允许 TIME_WAIT 状态的）。结果第二个实例**照样启动成功**，
-    两个服务同时"监听" 8080，连接被随机分给其中一个。
+    两个服务同时"监听" 8577，连接被随机分给其中一个。
 
     现象：有时响应正常、有时数据是旧的、有时状态不一致 ——
     极难排查。而且它把"端口占用"这个本该立刻暴露的错误变成了**静默**。

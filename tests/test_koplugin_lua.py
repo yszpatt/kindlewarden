@@ -481,7 +481,7 @@ def test_deploy_installs_only_the_plugin_by_default(tmp_path, monkeypatch):
     from kindlewarden.config import Config
 
     out = tmp_path / "dist"
-    args = argparse.Namespace(server="http://10.0.0.5:8080", out=str(out))
+    args = argparse.Namespace(server="http://10.0.0.5:8577", out=str(out))
     assert cmd_package(args, Config()) == 0
 
     # 造假 Kindle，并**预置一份旧的 shell 客户端**（模拟残留）
@@ -511,7 +511,7 @@ def test_deploy_installs_only_the_plugin_by_default(tmp_path, monkeypatch):
     # 拷过去的插件地址也必须已经替换过
     text = (kindle / "koreader" / "plugins" / "kindlewarden.koplugin"
             / "main.lua").read_text(encoding="utf-8")
-    assert "10.0.0.5:8080" in text
+    assert "10.0.0.5:8577" in text
 
     # 插件里必须带"清理竞争者"的逻辑（双保险：即使有人手工拷了旧的，插件启动时也会杀掉）
     assert "_reap_rival_clients" in text, \
@@ -526,7 +526,7 @@ def test_deploy_can_still_install_shell_client_on_request(tmp_path):
     from kindlewarden.config import Config
 
     out = tmp_path / "dist"
-    args = argparse.Namespace(server="http://10.0.0.5:8080", out=str(out))
+    args = argparse.Namespace(server="http://10.0.0.5:8577", out=str(out))
     assert cmd_package(args, Config()) == 0
 
     kindle = tmp_path / "fake_kindle"
@@ -559,7 +559,7 @@ def test_deploy_refuses_stale_artifacts(tmp_path):
     from kindlewarden.config import Config
 
     out = tmp_path / "dist"
-    args = argparse.Namespace(server="http://10.0.0.5:8080", out=str(out))
+    args = argparse.Namespace(server="http://10.0.0.5:8577", out=str(out))
     assert cmd_package(args, Config()) == 0
 
     kindle = tmp_path / "fake_kindle"

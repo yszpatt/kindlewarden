@@ -16,7 +16,7 @@ HERE=$(dirname "$0")
 # shellcheck source=/dev/null
 [ -f "$HERE/config.sh" ] && . "$HERE/config.sh"
 
-SERVER="${WARDEN_SERVER:-http://192.168.1.50:8080}"
+SERVER="${WARDEN_SERVER:-http://192.168.1.50:8577}"
 STATE_DIR="${WARDEN_STATE_DIR:-/mnt/us/kindlewarden}"
 WGET_OPTS="${WARDEN_WGET_OPTS:--q -T 10}"
 LOG="$STATE_DIR/warden.log"

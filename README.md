@@ -65,7 +65,7 @@ python -m kindlewarden.cli serve
 # 另一个终端：灌一组样例内容审版面
 python -m kindlewarden.cli seed-demo
 
-# 浏览器打开 http://127.0.0.1:8080/ 就能看到副屏
+# 浏览器打开 http://127.0.0.1:8577/ 就能看到副屏
 ```
 
 挂到 MCP 客户端（Claude Code 示例）：
@@ -77,10 +77,10 @@ claude mcp add kindlewarden -- python -m kindlewarden.mcp_server
 设置副屏服务地址（agent 在别的机器上时）：
 
 ```bash
-KINDLEWARDEN_URL=http://192.168.1.50:8080
+KINDLEWARDEN_URL=http://192.168.1.50:8577
 ```
 
-浏览器打开 **http://127.0.0.1:8080/** 就是管理控制台。
+浏览器打开 **http://127.0.0.1:8577/** 就是管理控制台。
 
 三个入口，用途不同：
 
@@ -105,7 +105,7 @@ cd kindlewarden
 docker compose up -d
 ```
 
-控制台：**http://127.0.0.1:8080/**
+控制台：**http://127.0.0.1:8577/**
 
 不用 compose 也行：
 
@@ -113,7 +113,7 @@ docker compose up -d
 docker build -t kindlewarden .
 
 docker run -d --name kindlewarden \
-  -p 8080:8080 \
+  -p 8577:8577 \
   -e KINDLEWARDEN_PUBLIC_HOST=192.168.1.50 \
   -v warden-data:/data \
   --restart unless-stopped \
@@ -126,7 +126,7 @@ docker run -d --name kindlewarden \
 那个地址在局域网里根本不存在。Kindle 照着连的现象只是
 「页面无法显示」，很难联想到是地址猜错了 —— 所以这里要显式指定。
 
-可以写 `192.168.1.50`，也可以直接粘 `http://192.168.1.50:8080`，两种都认。
+可以写 `192.168.1.50`，也可以直接粘 `http://192.168.1.50:8577`，两种都认。
 
 查宿主机的局域网 IP：
 
@@ -156,7 +156,7 @@ ipconfig getifaddr en0  # macOS
 顺带这个容器也能干设备侧打包的活（它保留了源码布局）：
 
 ```bash
-docker compose exec kindlewarden warden package --server http://192.168.1.50:8080
+docker compose exec kindlewarden warden package --server http://192.168.1.50:8577
 docker compose cp kindlewarden:/app/dist ./dist
 ```
 
@@ -169,7 +169,7 @@ docker compose cp kindlewarden:/app/dist ./dist
 ### 不越狱：自带浏览器
 
 ```
-http://<host的局域网IP>:8080/kindle
+http://<host的局域网IP>:8577/kindle
 ```
 
 地址可以在管理控制台预览图下方直接看到。
@@ -184,7 +184,7 @@ http://<host的局域网IP>:8080/kindle
 ### 越狱后：KOReader 插件（推荐）
 
 ```powershell
-warden package --server http://<host的局域网IP>:8080
+warden package --server http://<host的局域网IP>:8577
 warden deploy
 ```
 
@@ -228,7 +228,7 @@ warden deploy
 | 设置 | 板块开关、保留时长、时钟、天气、轮询间隔、**夜间/横屏** —— **保存即生效，不用重启** |
 | 设备状态 | Kindle 最后拉取时间与 IP（只统计设备请求，不含管理页自己的轮询） |
 
-详情页支持深链接：`http://<host>:8080/#b=<简报ID>`，可以直接分享或收藏。
+详情页支持深链接：`http://<host>:8577/#b=<简报ID>`，可以直接分享或收藏。
 
 另有 `/view` 是一个极简的全屏画面页，适合挂在第二个窗口里盯着。
 

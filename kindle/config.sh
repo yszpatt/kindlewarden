@@ -5,7 +5,7 @@
 # 副屏服务的地址。
 # ⚠️ 必须写 host 的**局域网 IP**，不能用 localhost / 127.0.0.1（那是 Kindle 自己）。
 #    建议在路由器上给 host 做 DHCP 保留，避免 IP 漂移。
-WARDEN_SERVER="http://192.168.1.50:8080"
+WARDEN_SERVER="http://192.168.1.50:8577"
 
 # 状态目录（rev 缓存、日志）。/mnt/us 是 USB 可见分区，方便取日志。
 WARDEN_STATE_DIR="/mnt/us/kindlewarden"

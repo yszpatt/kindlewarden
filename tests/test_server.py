@@ -13,7 +13,7 @@ from kindlewarden.server import is_likely_virtual, lan_addresses, startup_banner
 
 def test_banner_warns_when_bound_to_loopback():
     cfg = Config()
-    lines = startup_banner(host="127.0.0.1", port=8080, lan=["192.168.1.50"], cfg=cfg)
+    lines = startup_banner(host="127.0.0.1", port=8577, lan=["192.168.1.50"], cfg=cfg)
     text = "\n".join(lines)
     assert "只监听 127.0.0.1" in text
     assert "--host 0.0.0.0" in text
@@ -23,16 +23,16 @@ def test_banner_warns_when_bound_to_loopback():
 
 def test_banner_shows_lan_address_when_bound_wide():
     cfg = Config()
-    lines = startup_banner(host="0.0.0.0", port=8080, lan=["192.168.1.50"], cfg=cfg)
+    lines = startup_banner(host="0.0.0.0", port=8577, lan=["192.168.1.50"], cfg=cfg)
     text = "\n".join(lines)
-    assert "http://192.168.1.50:8080/rev" in text
+    assert "http://192.168.1.50:8577/rev" in text
     assert "只监听" not in text
 
 
 def test_banner_lists_extra_adapters_separately():
     """多网卡时要区分开，否则用户可能挑到 WSL 那种连不通的虚拟网卡。"""
     cfg = Config()
-    lines = startup_banner(host="0.0.0.0", port=8080,
+    lines = startup_banner(host="0.0.0.0", port=8577,
                            lan=["192.168.1.50", "172.31.224.1"], cfg=cfg)
     text = "\n".join(lines)
     # 真实网卡（调用方已排好序）出现在第一行推荐位
@@ -66,13 +66,13 @@ def test_is_likely_virtual_classification():
 
 def test_banner_warns_when_no_lan_address():
     cfg = Config()
-    lines = startup_banner(host="0.0.0.0", port=8080, lan=[], cfg=cfg)
+    lines = startup_banner(host="0.0.0.0", port=8577, lan=[], cfg=cfg)
     assert any("没找到局域网 IPv4" in line for line in lines)
 
 
 def test_banner_mentions_firewall_and_preroll():
     cfg = Config()
-    text = "\n".join(startup_banner(host="0.0.0.0", port=8080,
+    text = "\n".join(startup_banner(host="0.0.0.0", port=8577,
                                     lan=["192.168.1.50"], cfg=cfg))
     assert "New-NetFirewallRule" in text
     assert "预检" in text
@@ -104,9 +104,9 @@ def test_public_host_env_accepts_a_full_url(monkeypatch):
     """写成完整 URL 也要认（用户很自然会从地址栏复制）。"""
     from kindlewarden.server import PUBLIC_HOST_ENV
 
-    for value, want in (("http://10.0.0.7:8080", "10.0.0.7"),
+    for value, want in (("http://10.0.0.7:8577", "10.0.0.7"),
                         ("https://example.com", "example.com"),
-                        ("10.0.0.7:8080", "10.0.0.7"),
+                        ("10.0.0.7:8577", "10.0.0.7"),
                         ("  10.0.0.7  ", "10.0.0.7"),
                         ("http://10.0.0.7/rev", "10.0.0.7")):
         monkeypatch.setenv(PUBLIC_HOST_ENV, value)
@@ -131,8 +131,8 @@ def test_banner_uses_the_overridden_host(monkeypatch):
 
     monkeypatch.setenv(PUBLIC_HOST_ENV, "192.168.1.50")
     cfg = Config()
-    text = "\n".join(startup_banner(host="0.0.0.0", port=8080,
+    text = "\n".join(startup_banner(host="0.0.0.0", port=8577,
                                     lan=lan_addresses(), cfg=cfg))
-    assert "http://192.168.1.50:8080/rev" in text
+    assert "http://192.168.1.50:8577/rev" in text
     # 容器地址不该出现在推荐位
     assert "172.17." not in text.split("提示")[0]

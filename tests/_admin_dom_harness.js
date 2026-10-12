@@ -65,13 +65,13 @@ const BOARD = boardPath
   : CANNED_BOARD;
 const REAL_BRIEF = BOARD.briefs && BOARD.briefs[0] ? BOARD.briefs[0].id : BRIEF_ID;
 const REAL_TODO = BOARD.todos && BOARD.todos[0] ? BOARD.todos[0].id : TODO_ID;
-const DEVICE = { device: null, poll_idle_s: 300, lan: ['192.168.1.5'], port: 8080 };
+const DEVICE = { device: null, poll_idle_s: 300, lan: ['192.168.1.5'], port: 8577 };
 const CONFIG = {
   panels: { alerts: true, briefs: true, todos: true, ambient: true, statusbar: true },
   board: { max_briefs: 6, max_todos: 8, brief_retention_h: 24, failed_retention_h: 72, show_info: true },
   ambient: { weather: '', show_clock: false },
   browser: { viewport_w: 1072, viewport_h: 1388 },
-  server: { host: '0.0.0.0', port: 8080, heartbeat_min: 10, poll_idle_s: 300, poll_active_s: 30 },
+  server: { host: '0.0.0.0', port: 8577, heartbeat_min: 10, poll_idle_s: 300, poll_active_s: 30 },
   source_path: 'x',
 };
 
@@ -87,7 +87,7 @@ const CALLS = [];
 const sandbox = {
   console,
   document: { getElementById: el, querySelectorAll: () => [] },
-  location: { hash: '', port: '8080', pathname: '/' },
+  location: { hash: '', port: '8577', pathname: '/' },
   history: { replaceState() {} },
   setTimeout: () => 0,
   clearTimeout: () => {},

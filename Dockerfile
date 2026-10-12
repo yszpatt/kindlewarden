@@ -58,13 +58,13 @@ RUN groupadd --system --gid 10001 warden \
 USER warden
 VOLUME ["/data"]
 
-EXPOSE 8080
+EXPOSE 8577
 
 # 用 python 做健康检查，省掉装 curl
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import sys,urllib.request; \
-sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).status == 200 else 1)"
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8577/health', timeout=3).status == 200 else 1)"
 
 # 显式绑 0.0.0.0：只绑回环的话容器外永远连不上，
 # 而现象只是「页面无法显示」，很难联想到是监听地址。
-CMD ["warden", "serve", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["warden", "serve", "--host", "0.0.0.0", "--port", "8577"]

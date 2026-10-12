@@ -39,7 +39,7 @@ from typing import Any, Literal
 from .config import default_data_dir
 from .models import normalize_artifacts
 
-DEFAULT_URL = "http://127.0.0.1:8080"
+DEFAULT_URL = "http://127.0.0.1:8577"
 HTTP_TIMEOUT = 5.0
 RELAY_INTERVAL = 2.0
 # 退避封顶。副屏本身是分钟级刷新的，所以不需要更激进；

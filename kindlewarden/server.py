@@ -983,7 +983,7 @@ def cfg_port(server) -> int:
     try:
         return int(server.server_address[1])
     except (AttributeError, IndexError, TypeError, ValueError):
-        return 8080
+        return 8577
 
 
 def _check_page(*, client_ip: str, ua: str, port: int,
@@ -1078,7 +1078,7 @@ def lan_addresses() -> list[str]:
     """
     override = (os.environ.get(PUBLIC_HOST_ENV) or "").strip()
     if override:
-        # 允许写成 "http://1.2.3.4:8080" 或 "1.2.3.4"，都取主机名部分
+        # 允许写成 "http://1.2.3.4:8577" 或 "1.2.3.4"，都取主机名部分
         override = override.split("//")[-1].split("/")[0].split(":")[0]
         if override:
             return [override]
@@ -1157,7 +1157,7 @@ class RobustHTTPServer(ThreadingHTTPServer):
     #
     # 踩过一次，而且后果很隐蔽：在 Windows 上 ``SO_REUSEADDR`` 的语义是
     # **允许两个 socket 绑同一个端口**（Linux 只允许绑 TIME_WAIT 状态的），
-    # 于是"第二个实例"照样能启动成功，两个服务同时"监听" 8080，
+    # 于是"第二个实例"照样能启动成功，两个服务同时"监听" 8577，
     # 连接被随机分给其中一个。
     #
     # 现象会变成：有时响应正常、有时数据是旧的、有时状态不一致 ——

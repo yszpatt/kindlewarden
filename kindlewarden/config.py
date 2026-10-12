@@ -104,7 +104,7 @@ class DisplayConfig:
 @dataclass
 class ServerConfig:
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 8577
     heartbeat_min: float = 10.0
     poll_idle_s: int = 300
     poll_active_s: int = 30

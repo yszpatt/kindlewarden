@@ -46,7 +46,7 @@
 warden doctor
 ```
 
-它会直接告诉你地址。管理控制台（`http://<host>:8080/`）的预览图下方也会显示。
+它会直接告诉你地址。管理控制台（`http://<host>:8577/`）的预览图下方也会显示。
 
 ### ⚠️ Kindle 上要开的是 /kindle，不是 /
 
@@ -72,7 +72,7 @@ warden doctor
    （不同固件的入口名可能是「网页浏览器」/ "Experimental Browser"）
 3. 地址栏输入自检给出的地址，例如：
    ```
-   http://192.168.1.50:8080/kindle
+   http://192.168.1.50:8577/kindle
    ```
 4. 建议**加为书签**，以后一点就开
 5. 页面会自己刷新，不用手动重载
@@ -90,7 +90,7 @@ warden doctor
 **在设备上直接试**（不用改配置，改地址栏就行）：
 
 ```
-http://192.168.1.50:8080/kindle?w=1000&h=1300
+http://192.168.1.50:8577/kindle?w=1000&h=1300
 ```
 
 | 现象 | 调整 |
@@ -120,7 +120,7 @@ http://192.168.1.50:8080/kindle?w=1000&h=1300
 
 ```powershell
 New-NetFirewallRule -DisplayName "kindlewarden" -Direction Inbound `
-  -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private
+  -Protocol TCP -LocalPort 8577 -Action Allow -Profile Private
 ```
 
 > ⚠️ **从 host 本机访问自己的局域网 IP 走的是回环，不能证明防火墙放行了。**
@@ -182,7 +182,7 @@ warden usb --watch 60
    需要补焊或更换接口（手机维修店即可）
 
 **如果 USB 暂时修不好**：副屏其实**现在就能用** ——
-Kindle 自带浏览器打开 `http://<IP>:8080/kindle` 不依赖 USB，
+Kindle 自带浏览器打开 `http://<IP>:8577/kindle` 不依赖 USB，
 只是拿不到 FBInk 方案的常驻与省电优势。
 
 ### 1. 让副屏服务脱离这个会话自己跑
@@ -216,13 +216,13 @@ schtasks /Delete /TN "kindlewarden" /F
 warden doctor
 ```
 
-在 Kindle 自带浏览器里打开它给出的 `http://<IP>:8080/kindle`，
+在 Kindle 自带浏览器里打开它给出的 `http://<IP>:8577/kindle`，
 **能看到画面再往下走**。越狱不能解决网络问题，只会让你在更麻烦的状态下排查它。
 
 ### 3. 把客户端包打好
 
 ```powershell
-warden package --server http://<host的局域网IP>:8080
+warden package --server http://<host的局域网IP>:8577
 ```
 
 产物在 `dist/kindlewarden/`。打包脚本会做三件手工最容易翻车的事：
@@ -444,7 +444,7 @@ LanguageBreak 的官方支持范围是 **5.14.3 – 5.16.2.1.1**。
 **前提：Kindle 上已装 KOReader。**
 
 ```powershell
-warden package --server http://<host的局域网IP>:8080
+warden package --server http://<host的局域网IP>:8577
 warden deploy
 ```
 
@@ -474,7 +474,7 @@ warden deploy
 |---|---|
 | 菜单里没有这一项 | 插件没拷对位置，或者 **KOReader 没重启** |
 | 点开一闪就退 | 看 `crash.log`（KOReader 数据目录下），插件报错会写在那儿 |
-| 显示"副屏服务不可达" | IP 不对 / 服务没跑 / 防火墙。用 Kindle 浏览器开 `http://<IP>:8080/kindle` 验一下 |
+| 显示"副屏服务不可达" | IP 不对 / 服务没跑 / 防火墙。用 Kindle 浏览器开 `http://<IP>:8577/kindle` 验一下 |
 | 卡片位置和点击对不上 | 插件里的 `IMG_W/IMG_H` 和服务端画布不一致 —— 跑 `pytest tests/test_koplugin_lua.py` 会抓到 |
 
 **为什么插件不自己排版**：服务端在返回 PNG 的同时，把每张卡片的矩形
@@ -533,7 +533,7 @@ libkh/bin/fbink        （约 1.4 MB）
 ```sh
 /mnt/us/libkh/bin/fbink --help | head -40
 command -v setsid nohup
-wget -T 10 -O - "http://<host IP>:8080/rev?c=kindle"
+wget -T 10 -O - "http://<host IP>:8577/rev?c=kindle"
 lipc-get-prop com.lab126.powerd preventScreenSaver
 ```
 
@@ -542,7 +542,7 @@ lipc-get-prop com.lab126.powerd preventScreenSaver
 ## 第 4 步：部署
 
 ```powershell
-warden package --server http://<host的局域网IP>:8080
+warden package --server http://<host的局域网IP>:8577
 warden deploy
 ```
 
@@ -604,7 +604,7 @@ dist/kindlewarden/
 |---|---|
 | 菜单里没有这一项 | 插件位置不对，或 **KOReader 没重启** |
 | 点开一闪就退 | 看 KOReader 数据目录下的 `crash.log`，插件报错会写在那儿 |
-| 一直显示"副屏服务不可达" | IP / 服务 / 防火墙。用 Kindle 浏览器开 `http://<IP>:8080/kindle` 验 |
+| 一直显示"副屏服务不可达" | IP / 服务 / 防火墙。用 Kindle 浏览器开 `http://<IP>:8577/kindle` 验 |
 | 卡片位置和点击对不上 | 插件里的 `IMG_W/IMG_H` 和服务端画布不一致 —— 跑 `pytest tests/test_koplugin_lua.py` 会抓到 |
 
 下载的 PNG 落在 `/mnt/us/koreader/kindlewarden/`（USB 可见），
@@ -644,7 +644,7 @@ warden publish "部署验证成功" --status ok --summary "Kindle 端已上屏"
 
 设备应该在十几秒到一分钟内刷新。
 
-**另一个更直观的判据**：打开管理控制台 `http://<host>:8080/`，
+**另一个更直观的判据**：打开管理控制台 `http://<host>:8577/`，
 右上角的「Kindle 尚未连接」应该变成具体时间。这证明设备真的在轮询
 （只有带 `?c=kindle` 的请求才算设备活动）。
 
@@ -697,7 +697,7 @@ framebuffer**。你点 scriptlet → 客户端画上副屏 → scriptlet 退出 
 |---|---|
 | **画面「闪一下就消失」** | **framework 抢屏** —— 见下面专门一节。检查 `config.sh` 里 `WARDEN_REDRAW_EVERY` 是不是被设成了 0 |
 | **插上电脑没反应（能充电）** | **先跑 `warden usb`** —— 分辨是「电脑没看见」还是「看见了没挂载」 |
-| **Kindle 浏览器打不开 `http://<IP>:8080/`** | **先跑 `warden doctor`** —— 九成是「服务只绑了 127.0.0.1」或「用了虚拟网卡地址」 |
+| **Kindle 浏览器打不开 `http://<IP>:8577/`** | **先跑 `warden doctor`** —— 九成是「服务只绑了 127.0.0.1」或「用了虚拟网卡地址」 |
 | 屏幕一直不变 | `warden.log` 有没有「拉取失败」；`config.sh` 里的 IP 对不对 |
 | 报 `bad interpreter` | 脚本是 CRLF。重新跑 `warden package` |
 | 报 `: not found` 之类 | BOM。同上 |

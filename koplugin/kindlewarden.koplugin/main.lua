@@ -42,7 +42,7 @@ local Screen = Device.screen
 -- 插件靠它把点击坐标换算回服务端那套坐标。
 local IMG_W, IMG_H = 1072, 1448
 
-local DEFAULT_SERVER = "http://192.168.1.50:8080"
+local DEFAULT_SERVER = "http://192.168.1.50:8577"
 local AUTOREFRESH_SEC = 60
 
 -- 所有端点集中在这里。
@@ -1266,7 +1266,7 @@ function Warden:addToMainMenu(menu_items)
     menu_items.kindlewarden_server = {
         text = _("kindlewarden：服务端地址"),
         sorting_hint = "tools",
-        help_text = _("例如 http://192.168.1.50:8080"),
+        help_text = _("例如 http://192.168.1.50:8577"),
         callback = function()
             local InputDialog = require("ui/widget/inputdialog")
             local current = G_reader_settings:readSetting("kindlewarden_server")

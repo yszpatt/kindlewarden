@@ -1,7 +1,7 @@
 # kindlewarden 副屏 Host
 #
 #   docker compose up -d
-#   控制台  http://127.0.0.1:8080/
+#   控制台  http://127.0.0.1:8577/
 #
 # ⚠️ 上线前**必须**改下面两处，否则 Kindle 连不上：
 #     1. KINDLEWARDEN_PUBLIC_HOST —— 填**宿主机的局域网 IP**
@@ -23,7 +23,7 @@ services:
 
     ports:
       # 左边是宿主机端口，右边是容器内端口（改左边即可）
-      - "8080:8080"
+      - "8577:8577"
 
     environment:
       # ⚠️ 改成你宿主机的局域网 IP。
