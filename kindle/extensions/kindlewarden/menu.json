@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "name": "启动副屏",
+      "priority": 1,
+      "action": "start.sh",
+      "refresh": false
+    },
+    {
+      "name": "停止副屏",
+      "priority": 2,
+      "action": "stop.sh",
+      "refresh": false
+    },
+    {
+      "name": "重启副屏",
+      "priority": 3,
+      "action": "restart.sh",
+      "refresh": false
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+# 换行符策略 —— 显式写死，不依赖每个人的 git 配置。
+#
+# 为什么需要：这个项目里有两种对换行**敏感**的文件：
+#   * .lua  —— 部署到 Kindle 的 KOReader 插件，package 自检要求 LF
+#   * .sh   —— Kindle 上的 shell 脚本，CRLF 会让 sh 报 "not found"
+#
+# 之前只有 core.autocrlf=input 在起作用（某人 clone 时若配成 true，
+# 工作区就会变成 CRLF，部署上去直接坏掉），而且实测
+# koplugin/main.lua 在工作区已经是 CRLF、别处都是 LF —— 不一致。
+#
+# 所以这里把规则写进仓库：**仓库里一律 LF**，脚本/Lua 在工作区也强制 LF。
+
+# 默认：按内容自动识别文本，存进仓库时统一成 LF
+* text=auto
+
+# 这两类必须在本机也是 LF —— 它们会被直接拷到设备上执行
+*.lua   text eol=lf
+*.sh    text eol=lf
+
+# 其余文本类型显式声明（便于 diff 和合并）
+*.py    text
+*.md    text
+*.toml  text
+*.json  text
+*.html  text
+*.css   text
+*.js    text
+*.txt   text
+
+# 二进制：不要做任何换行转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.woff  binary
+*.woff2 binary

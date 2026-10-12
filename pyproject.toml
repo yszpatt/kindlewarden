@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kindlewarden"
+version = "0.1.0"
+description = "把 AI 任务的完成简报推送到 Kindle 电子墨水副屏"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+dependencies = ["Pillow>=10.0"]
+keywords = ["kindle", "eink", "mcp", "dashboard", "agent", "koreader"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Lua",
+    "Topic :: System :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://github.com/yszpatt/kindlewarden"
+Repository = "https://github.com/yszpatt/kindlewarden"
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0"]
+dev = [
+    "pytest>=8.0",
+    # KOReader 插件是 Lua，而设备上没有 lua 解释器 —— 用它在 host 上查语法。
+    # 少一个 end 就加载不了，而设备上的现象只是「菜单里没这一项」。
+    "luaparser>=3.3",
+]
+
+[project.scripts]
+warden = "kindlewarden.cli:main"
+warden-mcp = "kindlewarden.mcp_server:main"
+
+[tool.setuptools]
+packages = ["kindlewarden"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# basetemp 必须落在工作区内：DSH 的 Windows 沙箱只授予工作区写权限，
+# 系统临时目录连读都会被拒。详见 .tools/sitecustomize.py 的说明。
+addopts = "--basetemp=.pytest-tmp -p no:cacheprovider"
+markers = ["slow: 会起子进程的端到端测试"]

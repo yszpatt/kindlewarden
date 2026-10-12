@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+.pytest-tmp/
+.pytest_cache/
+# 沙箱垫片生效前创建的目录，权限已损坏、无法删除，也读不到
+pytest-cache-files-*/
+
+# 本地运行时数据（事件日志、面板配置、设备端状态）
+.runtime/
+
+# 开发环境沙箱垫片与临时依赖（见 .tools/sitecustomize.py 的说明）
+.tools/
+.uv-cache/
+
+# 生成物
+dist/
+mockups/out/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
