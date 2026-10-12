@@ -221,7 +221,6 @@ def test_metrics_differ_by_orientation(landscape):
     assert m["brief_item_h"] < layout.BRIEF_ITEM_H, "横屏简报条目应该更矮（只一行）"
     assert m["todo_item_h"] < layout.TODO_ITEM_H, "横屏待办应该更紧凑"
     assert m["ambient_h"] < layout.AMBIENT_H, "横屏环境区应该更紧凑"
-    assert m["max_briefs"] == layout.LANDSCAPE_MAX_BRIEFS
 
     # 竖屏时回到原值
     render.reset_canvas()
@@ -229,6 +228,22 @@ def test_metrics_differ_by_orientation(landscape):
     assert p["brief_item_h"] == layout.BRIEF_ITEM_H
     assert p["todo_item_h"] == layout.TODO_ITEM_H
     assert p["ambient_h"] == layout.AMBIENT_H
+
+
+def test_metrics_do_not_contain_a_display_count_rule(landscape):
+    """``metrics()`` 里不该有「最多显示几条」这一项。
+
+    踩过：横屏曾经在这里封了「简报最多 4 条」，结果**无视配置** ——
+    `board.max_briefs` 改成 6 或 8，设备上照样只显示 4 条，
+    而且单行条目本就放得下更多，白留出 ~194px 空白。
+
+    能显示几条只该由 **配置** 和 **可用高度** 决定，
+    两者都在 `plan()` 里处理，不该藏进"度量"里。
+    """
+    assert "max_briefs" not in layout.metrics(), (
+        "metrics 里又出现了 max_briefs —— 显示条数不该由度量决定"
+    )
+    assert "max_todos" not in layout.metrics()
 
 
 def test_landscape_brief_item_is_single_line(landscape):
@@ -245,11 +260,52 @@ def test_landscape_brief_item_is_single_line(landscape):
     )
 
 
-def test_landscape_shows_four_briefs(landscape):
-    """横屏「最近完成」显示 4 条（用户明确要求）。"""
-    lay = plan(panels=PanelsConfig(), has_alert=False, n_briefs=8, n_todos=3)
-    assert lay.briefs.shown == layout.LANDSCAPE_MAX_BRIEFS == 4
-    assert lay.briefs.overflow == 8 - 4
+def test_landscape_respects_the_configured_max_briefs(landscape):
+    """横屏显示几条必须**跟配置走**。
+
+    用户反馈：「横屏模式下任务数量最多最多为 4 个，浪费空间
+    且与后台配置不符合」。
+
+    横屏和竖屏用同一套规则：``max_briefs`` 说几条就按几条去要，
+    要不到（空间不够）才少显示。
+    """
+    for cap in (2, 4, 6):
+        lay = plan(panels=PanelsConfig(), has_alert=False, n_briefs=12,
+                   n_todos=3, max_briefs=cap)
+        assert lay.briefs.shown == cap, (
+            f"配置 max_briefs={cap}，横屏却显示了 {lay.briefs.shown} 条"
+        )
+        assert lay.briefs.overflow == 12 - cap
+
+
+def test_landscape_has_no_hidden_cap_above_the_config(landscape):
+    """配置放宽到能放下多少就显示多少 —— 不许有个藏起来的硬上限。
+
+    横屏单行条目 84px，弹性区放得下 6 条。配置给 6 就该显示 6 条
+    （以前无论配多少都只有 4 条）。
+    """
+    lay = plan(panels=PanelsConfig(), has_alert=False, n_briefs=20,
+               n_todos=3, max_briefs=6)
+    assert lay.briefs.shown == 6, (
+        f"配置 max_briefs=6 且空间够，却只显示了 {lay.briefs.shown} 条 —— "
+        f"八成又有个硬上限"
+    )
+
+
+def test_landscape_uses_the_available_space(landscape):
+    """横屏不该在简报和待办之间留下大片空白。
+
+    这是"最多 4 条"那个硬上限的直接症状：卡在 4 条时中间空 ~194px，
+    而单行条目明明放得下 6 条。
+    """
+    lay = plan(panels=PanelsConfig(), has_alert=False, n_briefs=20,
+               n_todos=3, max_briefs=6)
+    b, t = lay.briefs, lay.todos
+    gap = t.label_y - (b.y + b.h)
+    assert gap < 120, (
+        f"简报与待办之间空了 {gap}px —— 空间没被利用起来"
+        f"（显示 {b.shown} 条，容量 {b.capacity}）"
+    )
 
 
 def test_landscape_todos_sit_at_the_bottom(landscape):

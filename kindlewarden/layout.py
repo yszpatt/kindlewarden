@@ -117,8 +117,21 @@ LANDSCAPE_TODO_ITEM_H = 56
 #: 一块改动同时满足"往下放"和"少占地方"。
 LANDSCAPE_AMBIENT_H = 74
 LANDSCAPE_ALERT_H = 168
-#: 横屏最多显示几条「最近完成」。
-LANDSCAPE_MAX_BRIEFS = 4
+
+# ⚠️ 这里**曾经**有个 `LANDSCAPE_MAX_BRIEFS = 4`，已经删掉了。
+#
+# 它同时踩了两个坑，都是实测打回来的：
+#
+#   1. **无视配置**。`board.max_briefs` 设成 6 或 8，横屏照样只显示 4 条 ——
+#      用户在管理页改了个数，设备上毫无反应。
+#   2. **浪费空间**。横屏简报是单行条目（84px），弹性区其实放得下 6 条；
+#      卡在 4 条会在简报和待办之间留下 ~194px 空白。
+#
+# 现在横屏竖屏**同一套规则**：能显示几条由
+#   配置的 max_briefs  和  实际可用高度
+# 一起决定（都在 `plan()` 里）。想少显示就在配置里调小 ——
+# 那是唯一该有的旋钮。删掉常量而不是留个 None 占位，
+# 是为了让"这里曾经有个隐藏上限"这件事在代码里彻底消失。
 
 #: 简报条目**低于这个高度就只画一行**（横屏 84 < 100，竖屏 128 > 100）。
 #:
@@ -142,6 +155,17 @@ def metrics() -> dict[str, int]:
 
     ``plan()`` 用它算坐标；渲染器**不**直接用它，而是从 ``Zone`` 读回
     （``Zone.item_h`` / ``Zone.h``）—— 这样渲染永远跟着布局走。
+
+    ⚠️ 这里**不含"显示几条"的规则**。
+
+    曾经横屏在这里额外封了「简报最多 4 条」，结果既**无视配置**
+    （`board.max_briefs` 改成 6 也没用），又**浪费空间**
+    （单行条目 84px，弹性区其实放得下 6 条，卡 4 条会留下 ~194px 空白）。
+
+    能显示几条只该由两件事决定：
+      * 配置的 ``max_briefs`` / ``max_todos``
+      * 实际可用高度
+    两者都由 `plan()` 处理，横屏竖屏**同一套规则**。
     """
     if is_landscape():
         return {
@@ -149,14 +173,12 @@ def metrics() -> dict[str, int]:
             "todo_item_h": LANDSCAPE_TODO_ITEM_H,
             "ambient_h": LANDSCAPE_AMBIENT_H,
             "alert_h": LANDSCAPE_ALERT_H,
-            "max_briefs": LANDSCAPE_MAX_BRIEFS,
         }
     return {
         "brief_item_h": BRIEF_ITEM_H,
         "todo_item_h": TODO_ITEM_H,
         "ambient_h": AMBIENT_H,
         "alert_h": ALERT_H,
-        "max_briefs": 0,          # 0 = 不额外封顶，用配置里的值
     }
 
 
@@ -313,10 +335,9 @@ def plan(*, panels: PanelsConfig, has_alert: bool,
     item_h = {"briefs": m["brief_item_h"], "todos": m["todo_item_h"]}
     weights = {"briefs": BRIEFS_WEIGHT, "todos": TODOS_WEIGHT}
     counts = {"briefs": n_briefs, "todos": n_todos}
-    # 横屏给 briefs 一个额外封顶（metric 里的 4 条）——让版面透气
+    # 「显示几条」只由**配置**决定 —— 横屏竖屏同一套规则。
+    # 这里曾经对横屏额外封了 4 条，既无视配置又浪费空间（见 metrics() 的说明）。
     caps = {"briefs": max_briefs, "todos": max_todos}
-    if m["max_briefs"]:
-        caps["briefs"] = min(caps["briefs"], m["max_briefs"])
 
     # ---- 横屏：待办**贴底**
     #
