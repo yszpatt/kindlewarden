@@ -565,14 +565,29 @@ def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -
     d.line([(MARGIN, y + h - 8), (MARGIN + CONTENT_W, y + h - 8)], fill=RULE, width=1)
 
 
-def _draw_todo(d: ImageDraw.ImageDraw, t: Todo, y: int, f: FontBook) -> None:
+def _draw_todo(d: ImageDraw.ImageDraw, t: Todo, y: int, h: int,
+               f: FontBook) -> None:
     """一条待办。勾选框落在图标列上，文字落在正文列上 —— 与简报同一条竖线。
 
-    条目高度 64：勾选框与文字都在 y+8..y+56 这条带子里垂直居中，
+    ⚠️ **必须接收条目高度 ``h``**，所有元素按它居中。
+
+    踩过：原来签名里没有 ``h``，几个元素都用写死的偏移
+    （文字 y+8、勾选框 y+32、删除线 y+30、时间戳 y+22），
+    那套是按竖屏的 64px 调的。横屏把待办压到 56px 之后，
+    40 号字的墨迹从 y+21 一直画到 **y+65** —— **溢出条目 9px**，
+    最后一条的文字就渗进了下面环境区上方的留白里。
+
+    这和简报那个「_fit 返回多行导致溢出」是同一类问题：
+    **画在哪，必须由布局算出来的高度决定，不能在绘制里另写一套。**
+    现在改成从中线推：``cy = y + h / 2``，再用 :func:`_text_v_offset`
+    把墨迹对准它 —— 竖屏 64 / 横屏 56 都自动正确。
+
     最后一条不画分隔线（由调用方控制），避免在板块尾部多出一条悬空的线。
     """
     tf = f.get(F_TODO)
-    sym_checkbox(d, GUTTER_X, y + 32, 40, checked=t.done)
+    cy = y + h / 2                          # 条目中线，所有元素共用
+
+    sym_checkbox(d, GUTTER_X, cy, 40, checked=t.done)
 
     time_f = f.get(F_STAMP)
     stamp = format_clock(t.done_ts) if (t.done and t.done_ts) else ""
@@ -580,30 +595,42 @@ def _draw_todo(d: ImageDraw.ImageDraw, t: Todo, y: int, f: FontBook) -> None:
     color = LGRAY if t.done else BLACK
 
     txt = _fit(d, t.text, tf, TEXT_W - time_w)
-    d.text((TEXT_X, y + 8), txt, font=tf, fill=color)
+    txt_y = cy - _text_v_offset(d, txt, tf)
+    d.text((TEXT_X, txt_y), txt, font=tf, fill=color)
 
     if t.done:
-        d.line([(TEXT_X, y + 30), (TEXT_X + _tw(d, txt, tf), y + 30)],
+        # 删除线落在文字的**视觉中线**上 —— 跟着文字走，不写死
+        d.line([(TEXT_X, cy), (TEXT_X + _tw(d, txt, tf), cy)],
                fill=color, width=2)
     if stamp:
-        _right(d, MARGIN + CONTENT_W, y + 22, stamp, time_f, LGRAY)
+        _right(d, MARGIN + CONTENT_W,
+               cy - _text_v_offset(d, stamp, time_f), stamp, time_f, LGRAY)
 
 
 def _draw_ambient(d: ImageDraw.ImageDraw, cfg: Config, now: float, y: int,
                   f: FontBook) -> None:
     """环境区：时间 / 日期 / 天气。
 
-    这一区**贴底且不可变高**，读法是"页码"式的：时间在左、日期居中、天气在右。
+    这一区**贴底**锚定，读法是"页码"式的：时间在左、日期居中、天气在右。
     时钟打开时，三者共用一条视觉中线（而不是各自随意摆）—— 之前时钟配左、
     日期居中、两者基线还差 22px，看起来像没对齐完。
 
-    ⚠️ 内部偏移**跟着分区高度走**（横屏 112 / 竖屏 132）。
+    ⚠️ 所有元素都以**分区中线** ``cy`` 定位，不再用写死的偏移。
 
-    横屏时分区矮了 20px，如果还用竖屏的偏移，这一块内容会显得**偏上**、
-    底下空出一截 —— 而反馈恰恰是"时间要更靠下"。所以横屏把整行下移。
+    踩过两次同类的坑：
+
+      1. 用固定偏移画（按竖屏 132px 调的），横屏分区一改矮就**偏上**，
+         底下空一截；
+      2. 横屏压到 74px 后，原来那套 112px 的偏移会让日期**画到分区外面**去。
+
+    根子在于"偏移量"和"分区高度"被**各写各的**，改一个就错位。
+    改成从中线推：``cy = y + h / 2``，再用 :func:`_text_v_offset`
+    把**墨迹**对准它 —— 这样任何高度都自动居中，不会再溢出。
+    （``_text_v_offset`` 返回墨迹中心相对绘制 y 的偏移，
+      也是按钮文字居中用的同一个函数。）
     """
     h = _layout.metrics()["ambient_h"]
-    compact = h < _layout.AMBIENT_H
+    cy = y + h / 2                      # 分区中线，所有元素共用
 
     date_text = format_date(now)
 
@@ -611,16 +638,16 @@ def _draw_ambient(d: ImageDraw.ImageDraw, cfg: Config, now: float, y: int,
         clock_f = f.get(56, True)
         date_f = f.get(32)
         clock = format_clock(now)
-        d.text((MARGIN, y + (4 if compact else 14)), clock,
+        d.text((MARGIN, cy - _text_v_offset(d, clock, clock_f)), clock,
                font=clock_f, fill=BLACK)
         # 日期在**内容区**居中，而不是在画布居中 —— 否则会与右侧天气挤在一起
         cx = MARGIN + CONTENT_W / 2
         d.text((cx - _tw(d, date_text, date_f) / 2,
-                y + (28 if compact else 36)), date_text,
+                cy - _text_v_offset(d, date_text, date_f)), date_text,
                font=date_f, fill=GRAY)
     else:
         date_f = f.get(38)
-        d.text((MARGIN, y + (24 if compact else 32)), date_text,
+        d.text((MARGIN, cy - _text_v_offset(d, date_text, date_f)), date_text,
                font=date_f, fill=GRAY)
 
     if cfg.ambient.weather:
@@ -628,8 +655,9 @@ def _draw_ambient(d: ImageDraw.ImageDraw, cfg: Config, now: float, y: int,
         ww = _tw(d, cfg.ambient.weather, wf)
         icon = 40
         x0 = MARGIN + CONTENT_W - ww - icon - 14
-        sym_sun(d, x0 + icon / 2, y + (44 if compact else 52), icon)
-        d.text((x0 + icon + 14, y + (28 if compact else 36)),
+        sym_sun(d, x0 + icon / 2, cy, icon)
+        d.text((x0 + icon + 14,
+                cy - _text_v_offset(d, cfg.ambient.weather, wf)),
                cfg.ambient.weather, font=wf, fill=GRAY)
 
 
@@ -738,7 +766,7 @@ def render_board(board: Board, cfg: Config, *, now: float,
         _draw_label(d, "待办", z.label_y, f, z.overflow)
         for i, todo in enumerate(board.todos[:z.shown]):
             ty = z.y + i * z.item_h
-            _draw_todo(d, todo, ty, f)
+            _draw_todo(d, todo, ty, z.item_h, f)
             # 条间细线，**最后一条不画** —— 否则板块尾部会多出一条悬空的线
             if i < z.shown - 1:
                 d.line([(MARGIN, ty + z.item_h - 6),

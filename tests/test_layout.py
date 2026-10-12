@@ -340,3 +340,42 @@ def test_portrait_layout_is_unchanged_by_the_landscape_work():
     assert lay.todos.item_h == layout.TODO_ITEM_H == 64
     # 竖屏仍然是"简报+待办一起居中"
     assert lay.briefs.shown == 5
+
+
+def test_landscape_ambient_is_compact(landscape):
+    """横屏环境区（日期/时钟/天气）必须**压矮**。
+
+    用户反馈：「待办下方的日期显示往下放，现在占用了太多的位置」。
+
+    实测里面那一行内容的墨迹高度：时钟 43px / 日期 37px / 天气 30px，
+    取最高 43px，上下各留 ~15px 呼吸 → **73px 就够**。
+    而原来给了 112px，白多出 41px。
+
+    环境区是**贴底**锚定的，所以压矮它 = 顶边下移 = 日期真的"往下放"，
+    同时把省下的空间让给上面的内容。
+    """
+    m = layout.metrics()
+    assert m["ambient_h"] < layout.AMBIENT_H, "横屏环境区应该比竖屏矮"
+    assert m["ambient_h"] <= 80, (
+        f"横屏环境区 {m['ambient_h']}px 还是太占地方 —— "
+        f"实测内容只要 ~73px"
+    )
+    # 不能矮到装不下一行时钟（43px 墨迹 + 呼吸）
+    assert m["ambient_h"] >= 60, (
+        f"横屏环境区 {m['ambient_h']}px 太矮，60 号字的时钟会溢出"
+    )
+
+
+def test_landscape_ambient_top_moves_down(landscape):
+    """环境区压矮之后，它的**顶边**必须下移（日期才会真的往下走）。"""
+    lay = plan(panels=PanelsConfig(), has_alert=False, n_briefs=8, n_todos=4)
+    m = layout.metrics()
+
+    # 用**旧值**算一遍顶边，和现在比
+    old_top = (layout.CANVAS_H - MARGIN - STATUS_H - GAP
+               - 112)          # 112 是改动前的横屏值
+    assert lay.ambient_y > old_top, (
+        f"环境区顶边 {lay.ambient_y} 没有比改动前的 {old_top} 更靠下"
+    )
+    # 而且它仍然贴着状态栏上方（只隔一个 GAP）
+    assert lay.status_y - (lay.ambient_y + m["ambient_h"]) == GAP

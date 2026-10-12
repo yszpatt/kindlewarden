@@ -280,3 +280,117 @@ def test_brief_meta_line_stays_inside_its_item(fonts):
             f"简报条目底 {y0} 之后、待办标题 {y1} 之前的第 {y} 行有墨迹"
             f"（{ink} 个像素）—— 文字溢出了条目，会盖住待办"
         )
+
+
+def test_todo_text_stays_inside_its_item(fonts):
+    """待办文字必须完整落在自己的条目内 —— **两个方向都要**。
+
+    踩过：``_draw_todo`` 的签名里**根本没有条目高度**，几个元素都用写死的
+    偏移（文字 y+8、勾选框 y+32、删除线 y+30），那套是按竖屏 64px 调的。
+    横屏把待办压到 56px 之后，40 号字的墨迹从 y+21 一直画到 **y+65** ——
+    **溢出条目 9px**，最后一条渗进了下面环境区上方的留白里。
+
+    这和「``_fit`` 返回多行导致溢出」是同一类问题：
+    **画在哪必须由布局算出来的高度决定，不能在绘制里另写一套。**
+
+    判据：待办区底边之下、环境区之上，不许有任何墨迹。
+    """
+    from kindlewarden import layout, render
+
+    board = Board(
+        briefs=[Brief(id="b1", ts=TS, status="ok", title="标题",
+                      summary="摘要", project="p")],
+        # 用满几条，让"最后一条溢出"有机会暴露
+        todos=[Todo(id=f"t{i}", ts=TS, text=f"待办事项 {i} 的内容",
+                    done=(i == 0), done_ts=TS if i == 0 else 0)
+               for i in range(4)],
+        total_briefs=1, total_todos=4)
+
+    for w, h, name in ((layout.DEVICE_W, layout.DEVICE_H, "竖屏"),
+                       (layout.DEVICE_H, layout.DEVICE_W, "横屏")):
+        render.set_canvas(w, h)
+        try:
+            img, lay = render_board(board, Config(), now=TS, fonts=fonts)
+        finally:
+            render.reset_canvas()
+
+        z = lay.todos
+        assert z is not None, f"{name}: 没有待办区"
+        zone_bottom = z.y + z.h
+        limit = (lay.ambient_y if lay.ambient_y is not None
+                 else layout.CANVAS_H - layout.MARGIN)
+
+        # ⚠️ 只看条目底边**紧邻的一小段**，不要把整段空白都扫进来 ——
+        #    内容区终止线（content_rule_y）是**故意**画在留白里的装饰线，
+        #    它离底边远，但扫太宽就会把它误判成溢出。
+        #    溢出的特征是"紧贴底边往下渗"，所以窗口取 16px 足够
+        #    （横屏那个 bug 溢出 9px，竖屏 1px）。
+        window_end = min(zone_bottom + 16, limit)
+        px = img.load()
+        offenders = []
+        for y in range(zone_bottom, window_end):
+            if lay.content_rule_y is not None and y == lay.content_rule_y:
+                continue                      # 装饰线，不是溢出
+            ink = sum(1 for x in range(layout.MARGIN,
+                                       layout.CANVAS_W - layout.MARGIN, 3)
+                      if px[x, y] < 240)
+            if ink > 2:
+                offenders.append(y)
+
+        assert not offenders, (
+            f"{name}（条目高 {z.item_h}）：待办区底边 {zone_bottom} 紧下方"
+            f"出现了墨迹 {offenders} —— 文字溢出了条目，"
+            f"会渗进下面的留白/环境区"
+        )
+
+
+def test_ambient_content_is_vertically_centred(fonts):
+    """环境区的日期/时钟必须在该区里**垂直居中**（两个方向 × 有时钟/无时钟）。
+
+    踩过：原来用写死的偏移（按竖屏 132px 调的），横屏压到 74px 后
+    日期会画到分区外面去。根子是"偏移量"和"分区高度"各写各的 ——
+    改一个就错位。
+
+    判据：分区内墨迹的上留白与下留白之差不超过几个像素，
+    而且不许溢出分区。
+    """
+    from kindlewarden import layout, render
+
+    board = Board(briefs=[Brief(id="b1", ts=TS, status="ok", title="t",
+                                summary="s")],
+                  todos=[Todo(id="t1", ts=TS, text="待办")],
+                  total_briefs=1, total_todos=1)
+
+    for w, h, name in ((layout.DEVICE_W, layout.DEVICE_H, "竖屏"),
+                       (layout.DEVICE_H, layout.DEVICE_W, "横屏")):
+        for show_clock in (False, True):
+            render.set_canvas(w, h)
+            try:
+                cfg = Config()
+                cfg.ambient.show_clock = show_clock
+                cfg.ambient.weather = "晴 22°C"
+                img, lay = render_board(board, cfg, now=TS, fonts=fonts)
+                amb_h = layout.metrics()["ambient_h"]
+            finally:
+                render.reset_canvas()
+
+            assert lay.ambient_y is not None
+            px = img.load()
+            rows = [y for y in range(lay.ambient_y, lay.ambient_y + amb_h)
+                    if sum(1 for x in range(layout.MARGIN,
+                                            layout.CANVAS_W - layout.MARGIN, 3)
+                           if px[x, y] < 240) > 2]
+
+            assert rows, f"{name} clock={show_clock}: 环境区里没有墨迹"
+            pad_top = min(rows) - lay.ambient_y
+            pad_bot = (lay.ambient_y + amb_h) - max(rows)
+
+            assert max(rows) < lay.ambient_y + amb_h, (
+                f"{name} clock={show_clock}: 环境区内容溢出分区"
+                f"（区 {lay.ambient_y}~{lay.ambient_y + amb_h}，"
+                f"墨迹到 {max(rows)}）"
+            )
+            assert abs(pad_top - pad_bot) <= 8, (
+                f"{name} clock={show_clock}: 环境区内容没居中 —— "
+                f"上留白 {pad_top}px、下留白 {pad_bot}px（区高 {amb_h}）"
+            )
