@@ -26,7 +26,7 @@ Homepage = "https://github.com/yszpatt/kindlewarden"
 Repository = "https://github.com/yszpatt/kindlewarden"
 
 [project.optional-dependencies]
-mcp = ["mcp>=1.0"]
+mcp = ["mcp>=1.0,<2"]
 dev = [
     "pytest>=8.0",
     # KOReader 插件是 Lua，而设备上没有 lua 解释器 —— 用它在 host 上查语法。
