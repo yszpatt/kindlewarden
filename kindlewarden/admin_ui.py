@@ -703,6 +703,7 @@ const LABELS = {
   "display.night":"夜间模式（反色，暗环境不刺眼）",
   "display.landscape":"横屏模式（要物理转动设备看）",
   "display.rotate":'旋转方向：cw=往右转设备 / ccw=往左转',
+  "display.landscape_max_briefs":"横屏时「最近完成」最多几条（0=不限）",
   "server.heartbeat_min":"心跳重渲染间隔（分钟）",
   "server.poll_idle_s":"空闲时 Kindle 轮询间隔（秒）",
   "server.poll_active_s":"有新内容时轮询间隔（秒）",

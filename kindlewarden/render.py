@@ -84,10 +84,19 @@ TEXT_W = MARGIN + CONTENT_W - TEXT_X - 12   # 正文可用宽度（右侧留 12p
 # 各板块字号
 F_LABEL = 30                    # 板块标题
 F_BRIEF_TITLE = 44              # 简报标题（粗）
-F_BRIEF_META = 32               # 简报摘要 / 项目
+F_BRIEF_META = 32               # 简报摘要 / 项目（竖屏第二行）
 F_TODO = 40                     # 待办条目
 F_STAMP = 30                    # 右对齐的时间戳
 F_STATUS = 26
+#: 横屏单行模式下，右对齐的项目名。
+#:
+#: 比标题（44）明显小、和时间戳（30）同级 —— 它是**归属标注**不是内容，
+#: 读的时候应该"扫得到"而不是"抢戏"。用弱化色（LGRAY/GRAY）配小字号，
+#: 标题依然是这一行的视觉重心。
+F_BRIEF_PROJECT = 30
+
+#: 横屏单行时，项目名与时间戳之间的横向间隔。
+PROJECT_GAP = 28
 
 # ---------------------------------------------------------------- 字体
 
@@ -587,20 +596,31 @@ def _draw_label(d: ImageDraw.ImageDraw, text: str, y: int, f: FontBook,
 
 
 def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -> None:
-    """一条简报：左侧状态符号 + 标题（横屏时**只有这一行**）+ 右侧时间戳。
+    """一条简报：状态符号 + 标题 + 项目名 + 时间戳。
 
     ⚠️ 画几行由**传进来的条目高度 ``h``** 决定，不是另传一个开关：
 
       竖屏 ``h=128`` → 标题（y+4）+ 元信息（y+66），末行分隔线在 y+120
-      横屏 ``h=84``  → **只有标题**，分隔线在 y+76
+      横屏 ``h=84``  → **单行**：标题 + 右侧项目名，分隔线在 y+76
 
     为什么用高度当判据：``h`` 是**布局已经算好的事实**，
     渲染照着它画，两边天然一致。如果改成传一个 ``compact=True`` 标志位，
     调用方漏传就会出现"布局按单行留位、渲染画了两行"—— 文字直接溢出到
     下一个板块上。这样的重叠踩过一次（见 ``_fit`` 的注释）。
 
-    横屏为什么去掉元信息：横屏画布很宽（1448），标题一行放得下，
-    再占一行摘要是浪费 —— 而且竖屏空间少了 376px，撑不起 128px 的条目。
+    ⚠️ **横屏单行也必须带项目名。**
+
+    踩过：横屏为了省高度只画标题，结果"不知道是哪个项目报过来的"——
+    多条简报混在一起时完全分不清来源。横屏画布有 1448 宽，
+    标题一行根本用不完，项目名放右侧绰绰有余。
+
+    所以两种模式都显示项目名，只是**位置不同**：
+
+      竖屏（两行）  项目名在第二行，和摘要拼成 ``project · summary``
+      横屏（单行）  项目名**右对齐**，放在时间戳左边
+
+    横屏放右边而不是放到标题前面：标题的左边缘要和待办共用同一条文字线
+    （那是整版"规整"的主要来源），在它前面插东西会把这条线打断。
     """
     title_f = f.get(F_BRIEF_TITLE, True)
     two_line = h >= BRIEF_TWO_LINE_MIN_H
@@ -611,27 +631,50 @@ def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -
 
     time_f = f.get(F_STAMP)
     stamp = format_clock(b.ts)
-    time_w = _tw(d, stamp, time_f) + 24
+    # 时间戳要占的横向空间（含它右边到版心边缘的留白）
+    stamp_block = _tw(d, stamp, time_f) + 24
 
     suffix = "（有遗留）" if b.status == "partial" else ""
     title_color = GRAY if b.status == "info" else BLACK
-
-    title_y = y + 4 if two_line else y + (h - 49) // 2
-    d.text((TEXT_X, title_y), _fit(d, b.title + suffix, title_f, TEXT_W - time_w),
-           font=title_f, fill=title_color)
-    # 时间戳与标题共用一条基线：和标题第一行对齐，而不是和整条居中
-    stamp_y = (y + 16) if two_line else (title_y + 12)
-    _right(d, MARGIN + CONTENT_W, stamp_y, stamp, time_f, LGRAY)
+    meta_color = LGRAY if b.status == "info" else GRAY
 
     if two_line:
+        # ---- 竖屏：两行。项目名跟摘要在第二行
+        title_y, stamp_y = y + 4, y + 16
+        d.text((TEXT_X, title_y),
+               _fit(d, b.title + suffix, title_f, TEXT_W - stamp_block),
+               font=title_f, fill=title_color)
+        _right(d, MARGIN + CONTENT_W, stamp_y, stamp, time_f, LGRAY)
+
         meta_f = f.get(F_BRIEF_META)
-        meta_color = LGRAY if b.status == "info" else GRAY
         meta = " · ".join(x for x in (b.project, b.summary) if x)
         if meta:
             # ⚠️ _fit 会**压成单行**再截断（它必须这么做 ——
             #    否则 d.text 遇到 \n 会画多行，溢出这条固定高度的条目）。
             d.text((TEXT_X, y + 66), _fit(d, meta, meta_f, TEXT_W),
                    font=meta_f, fill=meta_color)
+    else:
+        # ---- 横屏：单行。右侧依次是「项目名」「时间戳」
+        title_y = y + (h - 49) // 2
+        stamp_y = title_y + 12
+
+        # 项目名右对齐在时间戳左边；它要占的宽度也要从标题里扣掉，
+        # 否则长标题会压到项目名上（两个都是右对齐区的东西，会叠字）。
+        proj_f = f.get(F_BRIEF_PROJECT)
+        proj_txt = _fit(d, b.project or "", proj_f, TEXT_W * 0.3) \
+            if b.project else ""
+        proj_block = (_tw(d, proj_txt, proj_f) + PROJECT_GAP) if proj_txt else 0.0
+
+        d.text((TEXT_X, title_y),
+               _fit(d, b.title + suffix, title_f,
+                    TEXT_W - stamp_block - proj_block),
+               font=title_f, fill=title_color)
+        _right(d, MARGIN + CONTENT_W, stamp_y, stamp, time_f, LGRAY)
+        if proj_txt:
+            # 贴着时间戳左侧放（时间戳块宽 = 文字宽 + 24 的留白）
+            proj_right = MARGIN + CONTENT_W - stamp_block - PROJECT_GAP
+            d.text((proj_right - _tw(d, proj_txt, proj_f), stamp_y),
+                   proj_txt, font=proj_f, fill=meta_color)
 
     d.line([(MARGIN, y + h - 8), (MARGIN + CONTENT_W, y + h - 8)], fill=RULE, width=1)
 
@@ -819,7 +862,11 @@ def render_board(board: Board, cfg: Config, *, now: float,
         has_alert=board.alert is not None,
         n_briefs=len(board.briefs),
         n_todos=len(board.todos),
-        max_briefs=cfg.board.max_briefs,
+        # ⚠️ 走 effective_max_briefs，别直接传 cfg.board.max_briefs ——
+        #    横屏另有上限，而这段代码在 render 和 screen 里各有一份，
+        #    两边必须算出同一个数（否则画面和点击区域会错开）。
+        max_briefs=_layout.effective_max_briefs(
+            cfg.board.max_briefs, cfg.display.landscape_max_briefs),
         max_todos=cfg.board.max_todos,
     )
 

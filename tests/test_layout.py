@@ -279,30 +279,77 @@ def test_landscape_respects_the_configured_max_briefs(landscape):
 
 
 def test_landscape_has_no_hidden_cap_above_the_config(landscape):
-    """配置放宽到能放下多少就显示多少 —— 不许有个藏起来的硬上限。
+    """上限必须**看得见**：`plan()` 给的数就是最终结果，没有第二道暗门。
 
-    横屏单行条目 84px，弹性区放得下 6 条。配置给 6 就该显示 6 条
-    （以前无论配多少都只有 4 条）。
+    这里传 ``max_briefs=6`` 就显示 6 条 —— 说明 `plan()` 自己不藏私。
+    横屏那个 5 条的上限是在 `effective_max_briefs()` 里算的、
+    来自配置项，不是 `plan()` 里的一条硬编码分支。
+
+    （这个区分很重要：以前是 `plan()` 里写死 `if landscape: max=4`，
+    配置怎么改都没用。现在是"调用方算好一个数传进来"。）
     """
     lay = plan(panels=PanelsConfig(), has_alert=False, n_briefs=20,
                n_todos=3, max_briefs=6)
     assert lay.briefs.shown == 6, (
-        f"配置 max_briefs=6 且空间够，却只显示了 {lay.briefs.shown} 条 —— "
-        f"八成又有个硬上限"
+        f"plan() 收到 max_briefs=6 却只显示 {lay.briefs.shown} 条 —— "
+        f"它内部八成又藏了一道上限"
     )
+
+
+# ---------------------------------------------------------------- 上限计算
+#
+# ⚠️ 「横屏显示几条」只能有**一处**计算。
+#
+# `plan()` 有两个调用方（render.render_board 和 screen.board_taps），
+# 如果各自决定横屏该限几条，迟早一边算一边不算 ——
+# 那正是踩过的坑：**画面画了 5 条、点击区域只认 4 条**，而且不报任何错。
+
+
+def test_effective_max_briefs_portrait_ignores_the_landscape_cap():
+    """竖屏不受横屏那个上限影响。"""
+    assert layout.effective_max_briefs(6, 5) == 6
+    assert layout.effective_max_briefs(8, 3) == 8
+
+
+def test_effective_max_briefs_landscape_takes_the_smaller(landscape):
+    """横屏取两者较小值。"""
+    assert layout.effective_max_briefs(6, 5) == 5
+    # 配置本身更小时听配置 —— 横屏上限不是"至少显示 5 条"
+    assert layout.effective_max_briefs(3, 5) == 3
+    assert layout.effective_max_briefs(5, 5) == 5
+
+
+def test_effective_max_briefs_zero_means_unlimited(landscape):
+    """``0``（或负数）表示不限，退回 board.max_briefs。"""
+    for val in (0, -1):
+        assert layout.effective_max_briefs(8, val) == 8, f"landscape_max={val}"
+
+
+def test_landscape_cap_comes_from_config_not_a_constant(landscape):
+    """横屏上限必须是**配置项**，不是代码里的常量。
+
+    这块最早写死 4 条，结果是"管理页改了 max_briefs 设备上毫无反应"。
+    现在的规矩：配置项 + 唯一计算函数。
+    """
+    from kindlewarden.config import DisplayConfig
+
+    assert hasattr(DisplayConfig, "landscape_max_briefs"), \
+        "DisplayConfig 里没有 landscape_max_briefs"
+    default = DisplayConfig().landscape_max_briefs
+    assert default == 5, f"默认值应该是 5，实际 {default}"
 
 
 def test_landscape_uses_the_available_space(landscape):
     """横屏不该在简报和待办之间留下大片空白。
 
-    这是"最多 4 条"那个硬上限的直接症状：卡在 4 条时中间空 ~194px，
-    而单行条目明明放得下 6 条。
+    曾经的症状：硬上限卡在 4 条时中间空 ~194px，
+    而单行条目明明放得下更多。
     """
     lay = plan(panels=PanelsConfig(), has_alert=False, n_briefs=20,
-               n_todos=3, max_briefs=6)
+               n_todos=3, max_briefs=5)
     b, t = lay.briefs, lay.todos
     gap = t.label_y - (b.y + b.h)
-    assert gap < 120, (
+    assert gap < 130, (
         f"简报与待办之间空了 {gap}px —— 空间没被利用起来"
         f"（显示 {b.shown} 条，容量 {b.capacity}）"
     )

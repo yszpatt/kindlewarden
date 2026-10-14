@@ -394,3 +394,196 @@ def test_ambient_content_is_vertically_centred(fonts):
                 f"{name} clock={show_clock}: 环境区内容没居中 —— "
                 f"上留白 {pad_top}px、下留白 {pad_bot}px（区高 {amb_h}）"
             )
+
+
+def _row_segments(px, w, y0, y1, min_gap=8):
+    """把 [y0, y1) 这几行里的墨迹按横坐标切成段。
+
+    ⚠️ **必须排除"贯通整条"的行** —— 简报条目底部有一条分隔线
+    （画在 ``y + item_h - 8``），它横跨整个版心。不排除的话，
+    所有段会被它连成一大段，判据就永远看不出"项目名在不在"。
+
+    这是我第一版测试挂掉的原因：段数只有 1 段 ``(40, 1031)``，
+    看着像"项目名没画出来"，实际是把分隔线算进去了。
+    """
+    width = w - 2 * 40          # 版心宽度（MARGIN = 40）
+    cols = []
+    for x in range(40, w - 40):
+        for y in range(y0, y1):
+            n = sum(1 for xx in range(40, w - 40) if px[xx, y] < 240)
+            if n > width * 0.8:
+                break            # 这一行是分隔线，整行跳过
+            if px[x, y] < 240:
+                cols.append(x)
+                break
+
+    if not cols:
+        return []
+    segs = []
+    start = prev = cols[0]
+    for x in cols[1:]:
+        if x - prev >= min_gap:
+            segs.append((start, prev))
+            start = x
+        prev = x
+    segs.append((start, prev))
+    return segs
+
+
+def test_brief_project_is_shown_in_landscape(fonts):
+    """横屏的单行简报**必须显示项目名**。
+
+    用户反馈：「横屏的任务简报 也还是增加下项目的提示吧，
+    要不然不知道是哪个项目报过来」。
+
+    横屏为了省高度原来只画标题，把项目名丢了 —— 多条简报混在一起时
+    完全分不清来源。横屏画布有 1448 宽，标题一行根本用不完。
+
+    ⚠️ 判据不能用"段数 >= N"。
+
+    第一版我就是那么写的（``len(segs) >= 3``），结果**变异测试打回来**：
+    把项目名的绘制整个去掉，测试照样通过。因为那一行本来就至少有
+    三段 —— **图标列、标题、时间戳**，我漏算了图标列。
+
+    有效的判据是"**标题和时间戳之间那块有没有东西**"：
+
+        有项目名  图标(43,85) 标题(99,184) 项目名(1051,1278) 时间戳(1333,1405)
+        无项目名  图标(43,85) 标题(99,184)                   时间戳(1333,1405)
+
+    所以：**只看标题之后、时间戳之前**的段。
+    """
+    from kindlewarden import layout, render
+
+    board = Board(
+        briefs=[Brief(id="b1", ts=TS, status="ok", title="标题",
+                      summary="摘要", project="backend-service")],
+        todos=[Todo(id="t1", ts=TS, text="待办")],
+        total_briefs=1, total_todos=1)
+
+    render.set_canvas(layout.DEVICE_H, layout.DEVICE_W)
+    try:
+        img, lay = render_board(board, Config(), now=TS, fonts=fonts)
+    finally:
+        render.reset_canvas()
+
+    z = lay.briefs
+    assert z is not None
+    px = img.load()
+    segs = _row_segments(px, layout.DEVICE_H, z.y, z.y + z.item_h)
+
+    assert len(segs) >= 3, f"段太少，测不出项目名：{segs}"
+
+    # 最右段是时间戳；最左两段是图标列和标题（图标在 GUTTER_X 附近）。
+    # 中间剩下的那些段就是"标题和时间戳之间"的区域 —— 项目名必须在这里。
+    stamp_seg = segs[-1]
+    title_seg = segs[1]              # segs[0] 是状态图标
+    middle = [s for s in segs[1:-1] if s[0] > title_seg[1] + 40]
+
+    assert middle, (
+        f"标题（{title_seg}）和时间戳（{stamp_seg}）之间没有墨迹 —— "
+        f"项目名没画出来。全部段：{segs}"
+    )
+    # 而且它应该是右对齐区的东西（在右半屏）
+    proj_seg = middle[-1]
+    assert proj_seg[0] > layout.DEVICE_H * 0.5, (
+        f"项目名段 {proj_seg} 不在右半屏 —— 位置不像右对齐的项目名"
+    )
+    # 不许压到时间戳
+    assert proj_seg[1] < stamp_seg[0], (
+        f"项目名段 {proj_seg} 和时间戳段 {stamp_seg} 相交 —— 叠字了"
+    )
+
+
+def test_landscape_project_tag_disappears_when_absent(fonts):
+    """**反面对照**：没有项目名时，标题与时间戳之间就该是空的。
+
+    这条是上面那条的"对照组"。只有正反都能区分，判据才算数 ——
+    第一版判据（``len(segs) >= 3``）就是因为它**在有和没有时都成立**
+    才失效的。
+    """
+    from kindlewarden import layout, render
+
+    board = Board(
+        briefs=[Brief(id="b1", ts=TS, status="ok", title="标题",
+                      summary="摘要", project="")],
+        todos=[Todo(id="t1", ts=TS, text="待办")],
+        total_briefs=1, total_todos=1)
+
+    render.set_canvas(layout.DEVICE_H, layout.DEVICE_W)
+    try:
+        img, lay = render_board(board, Config(), now=TS, fonts=fonts)
+    finally:
+        render.reset_canvas()
+
+    z = lay.briefs
+    px = img.load()
+    segs = _row_segments(px, layout.DEVICE_H, z.y, z.y + z.item_h)
+
+    assert len(segs) >= 2, f"段太少：{segs}"
+    title_seg, stamp_seg = segs[1], segs[-1]
+    middle = [s for s in segs[1:-1] if s[0] > title_seg[1] + 40]
+    assert not middle, (
+        f"没有项目名时，标题与时间戳之间**不该**有墨迹，"
+        f"却出现了 {middle}。全部段：{segs}"
+    )
+
+
+def test_portrait_project_is_shown_in_the_meta_line(fonts):
+    """竖屏的项目名在第二行（和摘要拼在一起）。"""
+    from kindlewarden import layout, render
+    from kindlewarden.render import TEXT_X
+
+    board = Board(
+        briefs=[Brief(id="b1", ts=TS, status="ok", title="标题",
+                      summary="摘要", project="backend-service")],
+        todos=[Todo(id="t1", ts=TS, text="待办")],
+        total_briefs=1, total_todos=1)
+
+    render.set_canvas(layout.DEVICE_W, layout.DEVICE_H)
+    try:
+        img, lay = render_board(board, Config(), now=TS, fonts=fonts)
+    finally:
+        render.reset_canvas()
+
+    z = lay.briefs
+    px = img.load()
+    segs = _row_segments(px, layout.DEVICE_W, z.y + 66, z.y + 112)
+    assert segs, "竖屏第二行没有墨迹"
+    assert segs[0][0] <= TEXT_X + 8, (
+        f"竖屏第二行没从正文列 {TEXT_X} 开始：{segs}"
+    )
+
+
+def test_landscape_project_tag_does_not_overlap_the_timestamp(fonts):
+    """超长项目名不许压到时间戳上，也不许跑出画布。
+
+    项目名从右往左排，太长就会盖住时间戳。
+    """
+    from kindlewarden import layout, render
+
+    board = Board(
+        briefs=[Brief(id="b1", ts=TS, status="ok",
+                      title="一个相当长的标题内容" * 2,
+                      summary="摘要",
+                      project="a-very-long-project-name-indeed")],
+        todos=[Todo(id="t1", ts=TS, text="待办")],
+        total_briefs=1, total_todos=1)
+
+    render.set_canvas(layout.DEVICE_H, layout.DEVICE_W)
+    try:
+        img, lay = render_board(board, Config(), now=TS, fonts=fonts)
+    finally:
+        render.reset_canvas()
+
+    z = lay.briefs
+    px = img.load()
+    segs = _row_segments(px, layout.DEVICE_H, z.y, z.y + z.item_h)
+
+    assert len(segs) >= 2, f"段太少：{segs}"
+    stamp_seg = segs[-1]
+    assert stamp_seg[1] <= layout.DEVICE_H - layout.MARGIN + 2, \
+        f"右侧内容超出画布：{segs}"
+    for s in segs[:-1]:
+        assert s[1] < stamp_seg[0], (
+            f"段 {s} 和时间戳段 {stamp_seg} 相交 —— 叠字了"
+        )

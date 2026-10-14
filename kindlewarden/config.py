@@ -100,6 +100,19 @@ class DisplayConfig:
     #:   "ccw" = 逆时针（画面顶部朝设备**左侧**，往左转设备看）
     rotate: str = "cw"
 
+    #: 横屏时「最近完成」的条数上限（``0`` = 不限，沿用 ``board.max_briefs``）。
+    #:
+    #: 为什么是**配置项**而不是代码里的常量
+    #: ------------------------------------
+    #: 这里最早写死过 4 条，结果是「管理页改了 max_briefs 设备上毫无反应」——
+    #: 等于在配置之外偷偷加了第二个人管不着的上限。用户的原话：
+    #: 「浪费空间且与后台配置不符合」。
+    #:
+    #: 所以横屏这个上限必须**看得见、改得动**：写在管理页的设置里、
+    #: 存进 panels.toml。默认 5 —— 横屏单行条目 84px，弹性区最多放得下 6 条，
+    #: 但 6 条会让版面发挤、没了呼吸，5 条是平衡点。
+    landscape_max_briefs: int = 5
+
 
 @dataclass
 class ServerConfig:
@@ -185,7 +198,7 @@ EDITABLE: dict[str, tuple[str, ...]] = {
               "failed_retention_h", "show_info"),
     "ambient": ("weather", "show_clock"),
     "browser": ("viewport_w", "viewport_h"),
-    "display": ("night", "landscape", "rotate"),
+    "display": ("night", "landscape", "rotate", "landscape_max_briefs"),
     "server": ("heartbeat_min", "poll_idle_s", "poll_active_s"),
 }
 
@@ -297,6 +310,10 @@ def to_toml(cfg: Config) -> str:
               f"landscape = {_toml_value(cfg.display.landscape)}",
               '# 旋转方向："cw" 顺时针（往右转设备看）/"ccw" 逆时针。',
               f"rotate = {_toml_value(cfg.display.rotate)}",
+              "# 横屏时「最近完成」最多显示几条（0 = 不限，用 board.max_briefs）。",
+              "# 单行条目 84px，弹性区最多放得下 6 条；6 条会发挤，5 条是平衡点。",
+              f"landscape_max_briefs = "
+              f"{_toml_value(cfg.display.landscape_max_briefs)}",
               ""]
 
     lines += ["", "[server]",

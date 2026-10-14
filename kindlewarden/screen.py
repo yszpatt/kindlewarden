@@ -52,7 +52,11 @@ def board_taps(board: Board, cfg: Config) -> tuple[list[dict], list[dict]]:
         has_alert=board.alert is not None,
         n_briefs=len(board.briefs),
         n_todos=len(board.todos),
-        max_briefs=cfg.board.max_briefs,
+        # ⚠️ 和 render.render_board 必须用**同一个**上限计算
+        #    （横屏另有上限）。两边不一致就会出现
+        #    "画面画了 5 条、点击区域只认 4 条"，而且不报错。
+        max_briefs=_layout.effective_max_briefs(
+            cfg.board.max_briefs, cfg.display.landscape_max_briefs),
         max_todos=cfg.board.max_todos,
     )
 

@@ -150,6 +150,29 @@ def is_landscape() -> bool:
     return CANVAS_W > CANVAS_H
 
 
+def effective_max_briefs(board_max_briefs: int,
+                         landscape_max_briefs: int) -> int:
+    """当前方向下，「最近完成」实际能用几条上限。**唯一实现。**
+
+    ⚠️ 必须有这么一个函数，不能让调用方各算各的。
+
+    `plan()` 有两处调用（`render.render_board` 和 `screen.board_taps`），
+    如果各自决定"横屏该限几条"，迟早会出现一边算一边不算 ——
+    那正是之前踩过的坑：**画面画了 5 条、点击区域只认 4 条**，
+    而且不报任何错。
+
+    规则：
+      * 竖屏 → 直接用 ``board.max_briefs``
+      * 横屏 → 取 ``board.max_briefs`` 与 ``landscape_max_briefs`` 的较小值
+      * ``landscape_max_briefs`` 为 0 或负数 → 表示不限，退回 ``board.max_briefs``
+    """
+    if not is_landscape():
+        return board_max_briefs
+    if landscape_max_briefs <= 0:
+        return board_max_briefs
+    return min(board_max_briefs, landscape_max_briefs)
+
+
 def metrics() -> dict[str, int]:
     """当前方向下各分区/条目的高度。
 
