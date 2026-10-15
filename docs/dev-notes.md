@@ -44,6 +44,41 @@ python -m kindlewarden.cli seed-demo
 
 ## Docker 构建里的几个决定
 
+### ⚠️ 必须装 `.[mcp]` extra —— 否则容器会无限重启
+
+这是**踩过的**，而且是容器里最难查的那种：
+
+```
+Dockerfile:  pip install -e .          ← 只装基础依赖
+pyproject:   dependencies = ["Pillow>=10.0"]
+             [project.optional-dependencies]
+             mcp = ["mcp>=1.0,<2"]      ← mcp 在 optional 里
+CMD:         warden serve … --mcp      ← 但启动时要用它
+```
+
+于是容器一起来就 `ModuleNotFoundError: No module named 'mcp'`，
+进程退出，而 compose 的 `restart: unless-stopped` 让它**无限重启**。
+
+用户看到的只有「容器一直 restarting」+ 满屏 traceback，
+而原因是构建时少写了一个 extra —— **两者看着毫无关系**。
+
+修法是三层的，缺一不可：
+
+1. **装 `.[mcp]`**
+2. **构建时验** —— 而且不能只 `import mcp`：
+   ASGI host、lifespan、Host 白名单都可能在这之后才炸，
+   那些失败发生在运行时，会被 restart 变成循环。
+   所以构建时**真的把 MCP 起一遍**（`build_server(enable_mcp=True)`），
+   失败就是构建失败，一眼能看到。
+3. **运行时兜底**：MCP 起不来**不许拖垮服务**。
+   看板比 MCP 重要 —— 它连着 Kindle，不该因为一个**可选**依赖缺失
+   就整个起不来。现在 `build_server` 把 ImportError 收住，
+   打一句带修法的提示，`/mcp` 回 503，**其余端点照常**。
+
+> 顺带一个教训：`/mcp` 的 503 提示原来统一说"加 `--mcp`"，
+> 但 `--mcp` 可能**已经加了**、只是 SDK 没装 —— 两种情况的修法完全不同。
+> 现在会区分：记录了 `mcp_error` 就报真正的原因。
+
 ### 为什么是 `pip install -e .` 而不是 `pip install .`
 
 ``cli.py`` 用 ``Path(__file__).resolve().parent.parent`` 定位**仓库根目录**，

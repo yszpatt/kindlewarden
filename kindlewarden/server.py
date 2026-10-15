@@ -730,6 +730,15 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length)
 
         if host is None:
+            # ⚠️ 提示要**分清两种原因**。
+            #
+            # 原来是统一说"启动时加 --mcp"，但--mcp **可能已经加了**，
+            # 只是 MCP SDK 没装（`mcp` 在 optional-dependencies 里）。
+            # 那种情况下让人去加 --mcp 是白费工夫 —— 真正要做的是
+            # 装 extra：`pip install -e ".[mcp]"`。
+            reason = getattr(self.server, "mcp_error", None)
+            if reason:
+                return self._error(503, f"MCP 没能启用：{reason}")
             return self._error(
                 503, "MCP over HTTP 未启用。启动服务时加 --mcp 打开它。")
 
@@ -1291,6 +1300,12 @@ class RobustHTTPServer(ThreadingHTTPServer):
     #: MCP 也必须跟着同一个走，否则两边看到的事件流会不一样。
     asgi_host = None
 
+    #: MCP 没起来时的**原因**（字符串）。None 表示没试过或起成功了。
+    #:
+    #: 用途是让 ``/mcp`` 的 503 能说清到底是"忘了加 --mcp"
+    #: 还是"加了但 SDK 没装" —— 这两种的修法完全不同。
+    mcp_error = None
+
     def handle_error(self, request, client_address) -> None:
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionResetError, ConnectionAbortedError,
@@ -1318,20 +1333,56 @@ def build_server(cfg: Config, *, enable_mcp: bool = False) -> RobustHTTPServer:
         # ⚠️ 起不来时**要吵**。MCP 是 agent 的主通道，
         #    它静默不可用的话，agent 那边只会看到"连接被关闭"，
         #    和这次要修的那个报错一模一样 —— 白改。
-        from .asgi_host import AsgiHost
-        from .mcp_server import build_http_server, warn_if_container_without_public_host
+        #
+        # ⚠️⚠️ 但"要吵"不等于"可以崩"。踩过一次：
+        #    镜像里没装 `[mcp]` extra（mcp 是 optional 依赖），
+        #    而 CMD 带了 --mcp → 这里 import 失败 → 进程退出 →
+        #    compose 的 restart: unless-stopped 让它**无限重启**。
+        #    用户看到的只有"容器一直 restarting"+ 满屏 traceback。
+        #
+        #    所以：**MCP 起不来时，看板照常提供**，只把 MCP 标成不可用。
+        #    副屏本身比 MCP 更重要 —— 它连着 Kindle，不该因为
+        #    一个可选依赖缺失就整个服务起不来。
+        try:
+            from .asgi_host import AsgiHost
+            from .mcp_server import (build_http_server,
+                                     warn_if_container_without_public_host)
 
-        # 容器里没设对外地址 → MCP 会每个请求都 421，而报错只说
-        # "Invalid Host header"，推不到真正原因。这里主动喊一句。
-        warn = warn_if_container_without_public_host()
-        if warn:
-            print(warn)
-            sys.stdout.flush()
+            # 容器里没设对外地址 → MCP 会每个请求都 421，而报错只说
+            # "Invalid Host header"，推不到真正原因。这里主动喊一句。
+            warn = warn_if_container_without_public_host()
+            if warn:
+                print(warn)
 
-        host = AsgiHost(build_http_server(service).streamable_http_app(),
-                        name="warden-mcp")
-        host.start()
-        httpd.asgi_host = host
+            host = AsgiHost(build_http_server(service).streamable_http_app(),
+                            name="warden-mcp")
+            host.start()
+            httpd.asgi_host = host
+        except ImportError as exc:
+            # 绝大多数情况是没装 `[mcp]` extra。把**修法**直接写出来，
+            # 而不是让它变成一个 traceback + 重启循环。
+            httpd.mcp_error = (
+                f"缺少 MCP SDK（{exc}）。装的是基础依赖，而 MCP 是可选的；"
+                '本机跑 `pip install -e ".[mcp]"`，'
+                "容器要确保 Dockerfile 装的是 `.[mcp]`。"
+            )
+            print()
+            print(f"✗ MCP 没能启用：{exc}")
+            print()
+            print("  这通常是因为装的是**基础依赖**，而 MCP SDK 是可选的。")
+            print("  修法（挑一个）：")
+            print('    pip install -e ".[mcp]"        # 本机安装')
+            print("    镜像要装 [mcp] extra（见 Dockerfile）")
+            print()
+            print("  服务会继续提供看板 —— MCP 不可用不影响 Kindle 拉图。")
+            print()
+        except Exception as exc:                       # noqa: BLE001
+            # 其它原因（端口被占、ASGI 起不来…）同样不该拖垮看板
+            httpd.mcp_error = f"{type(exc).__name__}: {exc}"
+            print(f"✗ MCP 没能启用：{httpd.mcp_error}")
+            print("  服务继续提供看板。")
+
+        sys.stdout.flush()
 
     return httpd
 

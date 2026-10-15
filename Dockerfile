@@ -44,9 +44,44 @@ COPY tools ./tools
 #    让代码自己去认，并把选中的字体打出来 ——
 #    缺字体在**构建时**炸掉，比等第一次渲染才发现好排查得多
 #    （容器里没有交互终端，事后翻日志很痛苦）。
-RUN pip install --no-cache-dir -e . \
+#
+# ⚠️ **必须带 `[mcp]` extra。**
+#
+# 踩过一次，而且是容器里最难查的那种：CMD 带了 `--mcp`，但镜像是
+# `pip install -e .` 装的 —— 那**只装基础依赖**，而 `mcp` 在
+# pyproject 的 optional-dependencies 里。于是容器一起来就
+# `ModuleNotFoundError: No module named 'mcp'`，进程退出，
+# 而 compose 的 `restart: unless-stopped` 让它**无限重启**。
+#
+# 现象是"容器一直 restarting"、日志刷满 traceback，
+# 而原因是构建时少写了一个 extra —— 两者看着毫无关系。
+#
+# 所以这里**同时验两件事**：
+#   1. 装了 `[mcp]` extra 之后 mcp 能 import
+#   2. 服务能真的带着 --mcp 构造出 MCP server（见下面 build_server 那行）
+RUN pip install --no-cache-dir -e ".[mcp]" \
  && python -c "from kindlewarden.render import FontBook; \
-fb = FontBook(); print('中文字体 OK:', fb.regular); print('粗体 OK:', fb.bold)"
+fb = FontBook(); print('中文字体 OK:', fb.regular); print('粗体 OK:', fb.bold)" \
+ && python -c "import mcp; print('MCP SDK OK')"
+
+# 构建时**真的把 MCP 起一遍**，确认镜像能在 `--mcp` 下工作。
+#
+# ⚠️ 这条存在的理由：`import mcp` 成功**不等于** MCP 能用 ——
+#    ASGI host、FastMCP 的 lifespan、Host 白名单都可能在这之后才炸。
+#    而它们的失败会发生在**容器运行时**，被 restart 策略变成重启循环。
+#    在这里起一次，失败就是**构建失败**：一眼能看到，也不会循环。
+#
+# 用临时目录 + 0 端口，跑完立刻停，不留下进程和文件。
+RUN python -c "\
+import tempfile; from pathlib import Path; \
+from kindlewarden.config import Config; \
+from kindlewarden.server import build_server; \
+d = Path(tempfile.mkdtemp()); \
+c = Config(); c.data_dir = d; c.source_path = d / 'panels.toml'; \
+c.server.host = '127.0.0.1'; c.server.port = 0; \
+s = build_server(c, enable_mcp=True); \
+assert s.asgi_host is not None, 'MCP 没起来'; \
+s.asgi_host.stop(); print('MCP 启动自检 OK')"
 
 # 非 root 运行。数据目录必须**先建好并授权**，
 # 否则挂载卷之后容器用户写不进去，现象是「服务起来但一条都存不下」。

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -356,5 +357,128 @@ def test_dockerfile_enables_mcp_by_default():
         f"镜像的启动命令没带 --mcp：{start}"
     )
     assert "0.0.0.0" in start, f"没绑 0.0.0.0，容器外连不上：{start}"
+
+
+# ---------------------------------------------------------------- extra 依赖
+#
+# ⚠️ 这一组盯住一个**会导致容器无限重启**的坑。
+#
+# MCP SDK 在 pyproject 的 optional-dependencies 里（`mcp = [...]`），
+# 而 `pip install -e .` **只装基础依赖**。我第一版给 Dockerfile 加了
+# `--mcp` 却没装 extra，于是容器一起来就 ModuleNotFoundError →
+# 进程退出 → compose 的 restart: unless-stopped 让它**无限重启**。
+#
+# 现象是"容器一直 restarting"、日志刷满 traceback，
+# 而原因是构建时少写了一个 extra —— 两者看着毫无关系。
+
+
+def test_dockerfile_installs_the_mcp_extra():
+    """Dockerfile 必须装 ``[mcp]`` extra。
+
+    这是上面那个重启循环的**直接原因**，也是唯一能在构建阶段
+    拦住它的地方。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "Dockerfile").read_text(encoding="utf-8")
+    assert '".[mcp]"' in text or "'.[mcp]'" in text, (
+        "Dockerfile 没有装 [mcp] extra —— 容器起来会因为 "
+        "ModuleNotFoundError 无限重启"
+    )
+
+
+def test_dockerfile_verifies_mcp_at_build_time():
+    """构建时要**真的把 MCP 起一遍**，而不是只 import。
+
+    `import mcp` 成功不等于 MCP 能用（ASGI host、lifespan、
+    Host 白名单都可能在这之后才炸），而那些失败发生在运行时，
+    会被 restart 策略变成重启循环。构建时验，失败就是**构建失败**。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "Dockerfile").read_text(encoding="utf-8")
+    assert "build_server" in text and "enable_mcp=True" in text, (
+        "Dockerfile 没有在构建时起一遍 MCP —— "
+        "只 import 挡不住运行时才炸的问题"
+    )
+
+
+def test_missing_mcp_sdk_does_not_kill_the_service(tmp_path, monkeypatch):
+    """**缺 MCP SDK 时服务必须照常起**（这是重启循环的根治）。
+
+    看板比 MCP 重要 —— 它连着 Kindle，不该因为一个
+    **可选**依赖缺失就整个服务起不来。
+    """
+    import builtins
+
+    from kindlewarden import server as srv
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "mcp" or name.startswith("mcp."):
+            raise ModuleNotFoundError(f"No module named '{name}'", name=name)
+        return real_import(name, *args, **kwargs)
+
+    # 清掉已缓存的，再挡住后续导入
+    saved = {k: v for k, v in sys.modules.items()
+             if k == "mcp" or k.startswith("mcp.")}
+    for k in saved:
+        del sys.modules[k]
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    cfg = Config()
+    cfg.data_dir = tmp_path
+    cfg.source_path = tmp_path / "panels.toml"
+    cfg.server.host = "127.0.0.1"
+    cfg.server.port = 0
+
+    try:
+        httpd = srv.build_server(cfg, enable_mcp=True)
+    finally:
+        monkeypatch.undo()
+        sys.modules.update(saved)
+
+    # 关键：没抛异常
+    assert httpd is not None
+    # MCP 标记为不可用，并且**记下了原因**
+    assert getattr(httpd, "asgi_host", None) is None
+    reason = getattr(httpd, "mcp_error", None)
+    assert reason, "没记下失败原因 —— /mcp 的 503 就说不清是哪种情况"
+    assert "mcp" in reason.lower(), reason
+
+    # 看板照常
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        for path in ("/health", "/board"):
+            with urllib.request.urlopen(base + path, timeout=8) as r:
+                assert r.status == 200, path
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_mcp_503_distinguishes_missing_sdk_from_missing_flag(live_without_mcp):
+    """没开 MCP 时的 503 要说清是**哪种**原因。
+
+    两种情况修法完全不同：
+      * 忘了加 --mcp           → 加参数
+      * 加参数了但 SDK 没装     → 装 extra
+
+    统一说"加 --mcp"的话，第二种情况的用户会白折腾。
+    """
+    base = live_without_mcp
+    req = urllib.request.Request(
+        base + "/mcp", data=b"{}", method="POST",
+        headers={"Content-Type": "application/json"})
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(req, timeout=5)
+    body = exc.value.read().decode("utf-8", errors="replace")
+    # 这个 fixture 是"没加 --mcp"，所以提示应该指向参数
+    assert "--mcp" in body, body
+
 
 
