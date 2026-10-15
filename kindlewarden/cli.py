@@ -160,6 +160,27 @@ def cmd_todo(args: argparse.Namespace, cfg: Config) -> int:
         out = _post(cfg, "/todo/remove", {"id": args.remove})
         print(f"已删除 {out.get('todo_id')}")
         return 0
+
+    if args.edit:
+        # warden todo --edit <id> 新文字...
+        new_text = " ".join(args.text or [])
+        if not new_text:
+            raise SystemExit("要改待办请给出新文字：warden todo --edit <id> 新文字")
+        board = _get(cfg, "/board")
+        old = next((t for t in board["todos"] if t["id"] == args.edit), None)
+        if old is None:
+            # 报错时把现有的列出来，省得用户再跑一次 list
+            print(f"没有 id={args.edit} 的待办。现有：")
+            for t in board["todos"]:
+                mark = "☑" if t["done"] else "☐"
+                print(f"  {mark} {t['id']}  {t['text']}")
+            return 1
+        out = _post(cfg, "/todo/update", {"id": args.edit, "text": new_text})
+        print(f"已修改 {out.get('todo_id')}")
+        print(f"  原：{old['text']}")
+        print(f"  新：{out.get('text')}")
+        return 0
+
     if not args.text:
         board = _get(cfg, "/board")
         if not board["todos"]:
@@ -1310,10 +1331,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_publish)
 
     s = sub.add_parser("todo", help="待办板")
-    s.add_argument("text", nargs="*")
-    s.add_argument("--done")
-    s.add_argument("--undone")
-    s.add_argument("--remove")
+    s.add_argument("text", nargs="*",
+                   help="不带选项时是新增；配合 --edit 时是新文字")
+    s.add_argument("--done", metavar="ID", help="标记完成")
+    s.add_argument("--undone", metavar="ID", help="取消完成")
+    s.add_argument("--remove", metavar="ID", help="删除")
+    s.add_argument("--edit", metavar="ID",
+                   help="修改已有待办的文字（新文字写在位置参数里）")
     s.set_defaults(func=cmd_todo)
 
     s = sub.add_parser("alert", help="需要人介入的告警")

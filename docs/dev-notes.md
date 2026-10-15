@@ -776,6 +776,49 @@ python -m kindlewarden.cli preview --out mockups/out/preview.png
 
 ---
 
+## 改一条已有待办
+
+后端一直就支持（`todo.edited` 事件 + `/todo/update` 端点 + 管理页原地编辑），
+缺的是**两个入口**：CLI 和 MCP。
+
+```
+warden todo --edit <id> 新文字
+```
+
+MCP 那边加了三个工具（`warden_update_todo` / `warden_complete_todo` /
+`warden_remove_todo`），共用一个定位器 `resolve_todo_id`。
+
+### 为什么共用一个定位器
+
+三个工具各写一份的话，行为迟早不一致 —— 比如"匹配到多条"时
+一个报错、另一个随便挑一条。
+
+⚠️ **随便挑一条然后改错，比拒绝更糟**：agent 以为改对了，
+而板上实际是另一条被改了。这种静默改错数据没有任何提示，
+等用户发现时已经过去很久。
+
+所以规则是：**匹配到多条就报错，并把候选列出来**，让调用方用 id 精确指定。
+
+这条逻辑用**变异测试**验过：把"歧义时拒绝"改成"直接取第一条"，
+`test_resolve_todo_refuses_on_ambiguity` 立刻失败
+（`assert 't1' is None`）—— 判据确实能区分。
+
+### 为什么支持按文字定位
+
+agent 常常只记得内容、不记得 id（id 是 `todo_list` 里那种
+`todo_7e2066a704`）。要求它必须先查一次 id 才能改，会让这个工具
+在实际使用中变得很啰嗦。
+
+但**省事的代价必须由工具自己兜住**：唯一匹配才动手，
+多条匹配就拒绝。这两条一起才成立。
+
+### 改完回报 `was`
+
+返回值里带改前的文字。agent 看不到界面，
+这个字段是它**自查有没有改错**的唯一依据。
+
+---
+
 ## 事件日志（调试神器）
 
 所有状态都在一个 append-only JSONL 里：

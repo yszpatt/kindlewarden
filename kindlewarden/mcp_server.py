@@ -158,6 +158,71 @@ def get_json(url: str, path: str, timeout: float = HTTP_TIMEOUT) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def resolve_todo_id(todo_id: str, match: str) -> tuple[str | None, dict | None]:
+    """把「要操作哪条待办」解析成一个具体的 id。
+
+    返回 ``(todo_id, error)``：成功时 error 为 None，失败时 todo_id 为 None
+    且 error 是一个可直接返回给 agent 的字典。
+
+    ⚠️ 三个待办工具（改 / 删 / 完成）共用一个解析器。
+
+    各写一份的话，行为迟早不一致 —— 比如"匹配到多条"时一个报错、
+    另一个随便挑一条。**随便挑一条然后改错**比拒绝更糟：
+    agent 以为改对了，而板上是另一条被改了。
+
+    为什么支持按文字匹配：agent 常常只记得内容、不记得 id。
+    但匹配到多条时**绝不猜**，直接把候选列出来让它自己指定。
+    """
+    todo_id = (todo_id or "").strip()
+    match = (match or "").strip()
+
+    if not todo_id and not match:
+        return None, {
+            "ok": False,
+            "error": "要指定操作哪一条：给 todo_id，或者给 match",
+            "hint": "先用 warden_list_recent 看有哪些待办",
+        }
+
+    try:
+        board = get_json(host_url(), "/board", timeout=3.0)
+    except Exception as exc:                       # noqa: BLE001
+        return None, {
+            "ok": False,
+            "error": f"副屏服务不可达：{type(exc).__name__}: {exc}",
+            "hint": "按文字定位需要先读到当前列表；"
+                    "服务恢复后再试。",
+        }
+
+    todos = board.get("todos") or []
+
+    if not todo_id:
+        needle = match.lower()
+        hits = [t for t in todos if needle in (t.get("text") or "").lower()]
+        if not hits:
+            return None, {
+                "ok": False,
+                "error": f"没有待办匹配 {match!r}",
+                "todos": [{"id": t["id"], "text": t["text"]} for t in todos],
+            }
+        if len(hits) > 1:
+            return None, {
+                "ok": False,
+                "error": f"{match!r} 匹配到 {len(hits)} 条，请用 todo_id 指定",
+                "candidates": [{"id": t["id"], "text": t["text"]}
+                               for t in hits],
+            }
+        todo_id = hits[0]["id"]
+
+    if not any(t.get("id") == todo_id for t in todos):
+        return None, {
+            "ok": False,
+            "error": f"看板上没有 id={todo_id} 的待办",
+            "todos": [{"id": t["id"], "text": t["text"]} for t in todos],
+        }
+
+    return todo_id, None
+
+
 class Relay:
     """后台投递线程。指数退避，永不放弃。"""
 
@@ -403,6 +468,90 @@ def build_server(outbox: Outbox | None = None):
     def warden_add_todo(text: str) -> dict:
         """往副屏待办板添加一条（给你的用户看的）。"""
         return {"queued": True, "queue_id": box.put("/todo", {"text": text})}
+
+    @mcp.tool(
+        title="修改一条已有待办",
+        description=(
+            "改掉副屏待办板上已有的一条（写错了、措辞要调整、范围变了）。\n"
+            "\n"
+            "**改之前先想一下：是不是该直接删掉？** "
+            "如果那条已经没意义了，用 warden_remove_todo 比改它更干净。\n"
+            "\n"
+            "定位方式二选一：\n"
+            "  * ``todo_id`` —— 从 warden_list_recent 拿到的 id，最可靠\n"
+            "  * ``match`` —— 用一段文字去匹配现有待办（子串匹配，忽略大小写）\n"
+            "\n"
+            "⚠️ 用 ``match`` 时如果**匹配到多条**会报错并列出候选，"
+            "这时改用 ``todo_id`` 指定，别猜。\n"
+            "这是同步调用（要读当前看板才能定位），失败会返回错误而不是卡住。"
+        ),
+    )
+    def warden_update_todo(text: str, todo_id: str = "",
+                           match: str = "") -> dict:
+        """把一条已有待办改成新的文字。
+
+        ``todo_id`` 和 ``match`` 二选一；都给时以 ``todo_id`` 为准。
+        """
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "新文字不能为空"}
+
+        resolved, err = resolve_todo_id(todo_id, match)
+        if err:
+            return err
+
+        # 记下改前的样子 —— agent 看不到界面，
+        # 回一句"原来是什么"能让它自己确认改对了没有。
+        try:
+            board = get_json(host_url(), "/board", timeout=3.0)
+            was = next((t.get("text", "") for t in (board.get("todos") or [])
+                        if t.get("id") == resolved), "")
+        except Exception:                              # noqa: BLE001
+            was = ""
+
+        return {
+            "ok": True,
+            "queued": True,
+            "todo_id": resolved,
+            "was": was,
+            "now": text,
+            "queue_id": box.put("/todo/update", {"id": resolved, "text": text}),
+        }
+
+    @mcp.tool(
+        title="删除一条待办",
+        description=(
+            "把一条待办从副屏上彻底删掉。\n"
+            "和「完成」不同：完成是勾上、留痕（``warden_complete_todo``）；"
+            "删除是它**本来就不该存在**（记错了、重复了、作废了）。\n"
+            "用 ``todo_id``（从 warden_list_recent 拿）或 ``match`` 定位。"
+        ),
+    )
+    def warden_remove_todo(todo_id: str = "", match: str = "") -> dict:
+        """删掉一条待办。"""
+        resolved, err = resolve_todo_id(todo_id, match)
+        if err:
+            return err
+        return {"ok": True, "queued": True, "todo_id": resolved,
+                "queue_id": box.put("/todo/remove", {"id": resolved})}
+
+    @mcp.tool(
+        title="把一条待办标记为完成",
+        description=(
+            "勾上一条待办（做完了）。会记录完成时间，板上显示成划掉的样子。\n"
+            "用 ``todo_id`` 或 ``match`` 定位；``done=False`` 可以取消勾选。"
+        ),
+    )
+    def warden_complete_todo(todo_id: str = "", match: str = "",
+                             done: bool = True) -> dict:
+        """标记待办完成/未完成。"""
+        resolved, err = resolve_todo_id(todo_id, match)
+        if err:
+            return err
+        return {"ok": True, "queued": True, "todo_id": resolved,
+                "done": bool(done),
+                "queue_id": box.put("/todo/toggle",
+                                    {"id": resolved, "done": bool(done)})}
 
     @mcp.tool(
         title="挂起/清除「需要你介入」告警",

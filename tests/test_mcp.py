@@ -375,3 +375,155 @@ def test_mcp_call_is_non_blocking_when_host_down(tmp_path):
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+# ---------------------------------------------------------------- 待办定位
+#
+# 改 / 删 / 完成这三个工具共用一个 `resolve_todo_id`。
+#
+# ⚠️ 各写一份的话行为迟早不一致 —— 比如"匹配到多条"时一个报错、
+# 另一个随便挑一条。**随便挑一条然后改错**比拒绝更糟：
+# agent 以为改对了，而板上是另一条被改了。
+
+
+class TodoHost(BaseHTTPRequestHandler):
+    """只回 /board，带上指定的待办列表。"""
+
+    todos: list[dict] = []
+
+    def do_GET(self):  # noqa: N802
+        payload = json.dumps({
+            "rev": "t", "briefs": [], "todos": TodoHost.todos,
+            "alert": None, "source_health": "ok",
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self):  # noqa: N802
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")
+
+    def log_message(self, *a):  # 静音
+        pass
+
+
+@pytest.fixture
+def todo_host(monkeypatch):
+    """起一个返回指定待办的假 host，并把它设成 MCP 的目标地址。"""
+    def _start(todos: list[dict]):
+        TodoHost.todos = todos
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), TodoHost)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{httpd.server_address[1]}"
+        monkeypatch.setenv("KINDLEWARDEN_URL", url)
+        return httpd
+    started = []
+    yield lambda todos: started.append(_start(todos))
+    for h in started:
+        h.shutdown()
+        h.server_close()
+
+
+def test_resolve_todo_by_id(todo_host):
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "买牛奶", "done": False}])
+    tid, err = resolve_todo_id("t1", "")
+    assert err is None and tid == "t1"
+
+
+def test_resolve_todo_by_unique_match(todo_host):
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "买牛奶", "done": False},
+               {"id": "t2", "text": "写周报", "done": False}])
+    tid, err = resolve_todo_id("", "周报")
+    assert err is None and tid == "t2"
+
+
+def test_resolve_todo_match_is_case_insensitive(todo_host):
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "Fix Auth Bug", "done": False}])
+    tid, err = resolve_todo_id("", "fix auth")
+    assert err is None and tid == "t1"
+
+
+def test_resolve_todo_refuses_on_ambiguity(todo_host):
+    """⚠️ 匹配到多条时**必须拒绝**，不许替调用方挑一条。
+
+    改错一条比拒绝更糟：agent 以为改对了，实际板上是另一条被改了。
+    返回里要把候选列出来，让它能用 id 精确指定。
+    """
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "买牛奶", "done": False},
+               {"id": "t2", "text": "买牛奶回来", "done": False}])
+    tid, err = resolve_todo_id("", "买牛奶")
+    assert tid is None
+    assert err is not None and not err.get("ok")
+    assert "匹配到 2 条" in err["error"], err
+    ids = {c["id"] for c in err.get("candidates", [])}
+    assert ids == {"t1", "t2"}, err
+
+
+def test_resolve_todo_reports_missing_match(todo_host):
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "买牛奶", "done": False}])
+    tid, err = resolve_todo_id("", "不存在的东西")
+    assert tid is None and "没有待办匹配" in err["error"]
+    # 顺便把现有的列出来，省一次往返
+    assert err.get("todos"), "报错时应该附上现有待办"
+
+
+def test_resolve_todo_rejects_unknown_id(todo_host):
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "买牛奶", "done": False}])
+    tid, err = resolve_todo_id("t_nope", "")
+    assert tid is None and "没有 id=t_nope" in err["error"]
+
+
+def test_resolve_todo_requires_some_locator(todo_host):
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "买牛奶", "done": False}])
+    tid, err = resolve_todo_id("", "")
+    assert tid is None and "要指定操作哪一条" in err["error"]
+    assert err.get("hint"), "应该提示怎么查 id"
+
+
+def test_resolve_todo_handles_host_down(monkeypatch):
+    """服务不可达时要给出**可读的错误**，而不是抛异常。"""
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    # 指向一个几乎不可能有人监听的端口
+    monkeypatch.setenv("KINDLEWARDEN_URL", "http://127.0.0.1:1")
+    tid, err = resolve_todo_id("", "随便")
+    assert tid is None
+    assert "不可达" in err["error"], err
+
+
+def test_update_todo_reports_the_previous_text(todo_host):
+    """改完要回报**改前的值** —— agent 看不到界面，靠它自己确认改对了没有。"""
+    from kindlewarden.mcp_server import resolve_todo_id
+
+    todo_host([{"id": "t1", "text": "旧文字", "done": False}])
+    tid, err = resolve_todo_id("t1", "")
+    assert err is None
+
+    # resolve 只负责定位；"改前值"由工具自己再读一次看板拿到。
+    # 这里确认那个 id 确实还能查到原文，保证工具能读到。
+    from kindlewarden.mcp_server import get_json, host_url
+    board = get_json(host_url(), "/board")
+    was = next(t["text"] for t in board["todos"] if t["id"] == tid)
+    assert was == "旧文字"

@@ -222,7 +222,7 @@ warden deploy
 |---|---|
 | 实时预览 | 跟着 `rev` 走，画面没变就不重新拉图 |
 | **简报列表 + 点击看详情** | 完整标题/摘要、产出物（可点链接）、元数据、钉住/撤回/以此为准发布更新 |
-| 待办 | 增删改、勾选完成（原地编辑） |
+| 待办 | 增删改、勾选完成（**点文字直接原地编辑**） |
 | 告警 | 挂起 / 清除 |
 | 发布 | 手动发一条，带**显示宽度实时计数**（超了会告诉你板上会被截断） |
 | 设置 | 板块开关、保留时长、时钟、天气、轮询间隔、**夜间/横屏** —— **保存即生效，不用重启** |
@@ -272,7 +272,11 @@ warden deploy
 | `warden deploy` | 把打包产物部署到 Kindle（自动找盘符） |
 | `warden preview` | **本地渲一张 PNG，不需要服务在跑** —— 用来反复调版面 |
 | `warden publish "标题" --status ok --summary "摘要"` | 发一条简报 |
-| `warden todo "要做的事"` / `warden todo --done <id>` | 待办板 |
+| `warden todo "要做的事"` | 新增待办 |
+| `warden todo` | 列出待办（带 id） |
+| `warden todo --edit <id> 新文字` | **修改**一条已有待办 |
+| `warden todo --done <id>` / `--undone <id>` | 勾上 / 取消勾选 |
+| `warden todo --remove <id>` | 删除 |
 | `warden alert "需要确认"` / `warden alert --clear` | 需要人介入的告警 |
 | `warden brief` | 列出简报（`--pin` / `--retract` 可操作） |
 | `warden board --json` | 查看看板原始数据 |
