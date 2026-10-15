@@ -122,7 +122,7 @@ def cmd_serve(args: argparse.Namespace, cfg: Config) -> int:
     if args.port:
         cfg.server.port = args.port
     from .server import serve
-    serve(cfg)
+    serve(cfg, enable_mcp=bool(getattr(args, "mcp", False)))
     return 0
 
 
@@ -1317,6 +1317,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("serve", help="启动常驻服务")
     s.add_argument("--host")
     s.add_argument("--port", type=int)
+    s.add_argument("--mcp", action="store_true",
+                   help="同时在这个端口上提供 MCP（POST /mcp）")
     s.set_defaults(func=cmd_serve)
 
     s = sub.add_parser("publish", help="发布一条任务完成简报")

@@ -119,7 +119,29 @@ agent ──stdio──▶ warden-mcp（瘦客户端）
 - ✅ stdio 是 MCP 最成熟的形态，各 harness 都支持
 - ✅ 瘦客户端是单文件脚本，部署成本极低
 
-代价：每个终端要装一次。（后续可加 HTTP transport 供「远程终端懒得装」的场景，但**不是默认**。）
+代价：每个终端要装一次。
+
+**HTTP transport 已经实现了（`warden serve --mcp`，端点 `POST /mcp`）。**
+
+两种形态**并存**，按场景选：
+
+| | stdio | HTTP |
+|---|---|---|
+| 配置 | 要填 exe 路径（转义容易错） | 一个 URL |
+| 发简报 | 本地队列 + 后台异步投递 | 同步写 |
+| host 挂了 | agent 无感 | tool call 报错 |
+| 跨机器 | 每台装一次 | 天然支持 |
+
+为什么最后加了 HTTP：stdio 那条路上**exe 路径的转义**成了实际故障源 ——
+实测就是客户端把 `C:\Users\...\warden-mcp.exe` 传成了
+`C:Usersyszpat.localbinwarden-mcp.EXE`（反斜杠被吃），
+报错却是 `MCP error -32000: Connection closed`，看不出真正原因。
+HTTP 形态把这个环节整个消掉。
+
+⚠️ 实现上 HTTP 端点**挂在同一个端口**、**同一进程**里
+（不额外开端口、不加反向代理）：ASGI app 由 `asgi_host.AsgiHost`
+跑在后台事件循环里，`/mcp` 的请求直接喂给它。
+多一个端口就多一个要记的地址，多一个代理就多一个会坏的环节。
 
 ### 2.2 工具集
 

@@ -632,6 +632,401 @@ def build_server(outbox: Outbox | None = None):
     return mcp
 
 
+# ---------------------------------------------------------------- HTTP 形态
+#
+# 和上面的 stdio 形态**并存**，不是替换。
+#
+# 两者的区别只有一个：**投递要不要经过本地发件箱**。
+#
+#   stdio（上面的 build_server）
+#     agent ─stdio─▶ 瘦客户端 ─▶ 本地队列 ─▶ 后台异步 POST ─▶ host
+#     agent 永远亚毫秒返回；host 挂了也完全无感。
+#     代价：每个终端要装一次（还要处理 exe 路径这类事）。
+#
+#   HTTP（下面的 build_http_server）
+#     agent ─HTTP─▶ host 的 /mcp ─▶ 直接写 BoardService
+#     没有 exe、没有本地队列、配置里就一个 URL。
+#     代价：**host 不可达时 tool call 直接报错** ——
+#           "副屏不影响主屏"这条保证在 HTTP 形态下**不再成立**。
+#
+# 为什么 HTTP 形态可以直接调 BoardService 而不走 HTTP：
+# 它就挂在同一个进程里（见 asgi_host），所以"直接写"是最短路径，
+# 中间再绕一次自己的 HTTP 反而多一个失败点。
+
+
+def _default_allowed_hosts() -> list[str]:
+    """按本机实际地址生成 MCP 的 Host 白名单（含端口通配）。
+
+    形如 ``["127.0.0.1:*", "localhost:*", "192.168.9.198:*", ...]``。
+
+    ⚠️ 必须带 ``:*`` —— 校验是拿**完整的 Host 头**（含端口）去比对的，
+    只写 IP 匹配不上 ``192.168.9.198:8577``。
+    """
+    hosts = ["127.0.0.1", "localhost", "[::1]"]
+    try:
+        from .server import lan_addresses
+        hosts.extend(lan_addresses())
+    except Exception:                                  # noqa: BLE001
+        pass
+    # 去重且保序
+    seen: list[str] = []
+    for h in hosts:
+        if h and h not in seen:
+            seen.append(h)
+    return [f"{h}:*" for h in seen]
+
+
+def build_http_server(svc: Any, *, allowed_hosts: list[str] | None = None):
+    """构造**挂在 host 进程内**的 MCP server（纯 HTTP 形态）。
+
+    ``svc`` 是 ``BoardService``。工具直接调它的方法 ——
+    没有网络、没有发件箱，调用返回即为最终结果。
+
+    ⚠️ ``allowed_hosts`` 必须配好，否则**局域网访问会被拒**。
+
+    MCP 的 streamable-http 默认开了 DNS-rebinding 防护，
+    ``allowed_hosts`` 默认是空列表 —— 于是**任何** Host 都不匹配：
+
+        421 Misdirected Request
+        Invalid Host header
+
+    实测：不配这个，连 ``127.0.0.1:8577/mcp`` 都是 421。
+
+    ⚠️ 它**不支持** ``"*"`` 这种通配。看实现（``_validate_host``）：
+    要么**精确匹配**完整的 Host 值（**含端口**，如 ``192.168.9.198:8577``），
+    要么用 ``host:*`` 这种"端口任意"的写法。
+    我第一版写了 ``["*"]``，结果连本机都被拒 —— 通配符的形式要对。
+
+    这个防护对"只给本机 agent 用"是合理的，但本项目的副屏
+    **本来就是局域网服务**（Kindle 按 IP 拉图、别的机器按 IP 连 MCP）。
+    所以默认按**本机所有地址 + 端口**生成 allowlist：
+    既让局域网能用，也不至于把 Host 校验完全关掉。
+    """
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    if allowed_hosts is None:
+        # 没显式指定 → 按实际地址生成
+        allowed_hosts = _default_allowed_hosts()
+
+    mcp = FastMCP(
+        "kindlewarden",
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=list(allowed_hosts),
+        ),
+    )
+
+    @mcp.tool(
+        title="发布任务完成简报到副屏",
+        description=(
+            "把一条任务完成简报推送到 Kindle 副屏。**同步生效**。\n"
+            "\n"
+            "副屏是常驻桌面、只读、一屏且**不能滚动**的电子墨水屏，"
+            "只承载**结论**，不承载**过程**。\n"
+            "\n"
+            "应该发布：完成一个多步骤任务 / 修复并验证了 bug / 完成部署迁移 / "
+            "得出用户需要知道的结论 / 任务失败或需要用户介入。\n"
+            "不要发布：单个文件编辑、单次命令执行、**任何中间步骤**、"
+            "纯信息查询（读文件、搜索）、你只是「开始了」某件事。\n"
+            "\n"
+            "summary 写成**给这个人的简报**（中文、一句一句说清结论），"
+            "不是写给他看的日志。第一句控制在 28 个中文字以内 —— "
+            "看板每行只显示这么多，超了会被截断。\n"
+            "多段用 \\n 分隔；想分条就用 - 或 1. 开头，渲染时会变成项目符号。\n"
+            "\n"
+            "如果同一件事之前发过，用 supersedes 传旧简报的 id 来更新那一条，"
+            "不要发新的（会刷屏）。"
+        ),
+    )
+    def warden_publish_brief(
+        title: str,
+        status: Status = "ok",
+        summary: str = "",
+        project: str = "",
+        artifacts: list | None = None,
+        duration_s: int = 0,
+        supersedes: str = "",
+    ) -> dict:
+        """发布一条简报（同步写入副屏）。"""
+        payload: dict = {
+            "title": title, "status": status, "summary": summary,
+            "project": project, "duration_s": int(duration_s or 0),
+        }
+        if artifacts:
+            payload["artifacts"] = normalize_artifacts(artifacts)
+        if supersedes:
+            payload["supersedes"] = supersedes
+        try:
+            out = svc.publish_brief(payload)
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool(
+        title="查看副屏当前内容",
+        description=(
+            "读取副屏上现在显示的简报、待办与告警。\n"
+            "**发布简报前先调这个**，检查同一任务是否已经汇报过 —— "
+            "如果已经发过，应该用 warden_publish_brief 的 supersedes 参数"
+            "更新那一条，而不是再发一条新的。"
+        ),
+    )
+    def warden_list_recent(limit: int = 10) -> dict:
+        """查看副屏当前内容。"""
+        board = svc.board(include_hidden=False)
+        n = max(1, min(int(limit or 10), 50))
+        return {
+            "ok": True,
+            "alert": board.alert.to_dict() if board.alert else None,
+            "briefs": [
+                {"id": b.id, "title": b.title, "status": b.status,
+                 "summary": b.summary, "project": b.project,
+                 "pinned": b.pinned}
+                for b in board.briefs[:n]
+            ],
+            "todos": [{"id": t.id, "text": t.text, "done": t.done}
+                      for t in board.todos],
+        }
+
+    @mcp.tool(
+        title="钉住/取消钉住一条简报",
+        description=(
+            "把某条简报钉在副屏最前面。钉住的简报**永不过期**，"
+            "适合需要长期挂在眼前的信息（进行中的事故、长期目标）。\n"
+            "用 id 指定，从 warden_list_recent 拿到。"
+        ),
+    )
+    def warden_pin(brief_id: str, pinned: bool = True) -> dict:
+        """钉住一条简报，使其永不过期并排在最前。"""
+        try:
+            out = svc.pin_brief(brief_id, bool(pinned))
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool(
+        title="撤回一条简报",
+        description=(
+            "从副屏撤下一条简报（例如发现汇报有误）。\n"
+            "用 id 指定，从 warden_list_recent 拿到。"
+        ),
+    )
+    def warden_retract(brief_id: str) -> dict:
+        """撤回一条简报。"""
+        try:
+            out = svc.retract_brief(brief_id)
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool(
+        title="在副屏待办板添加一条",
+        description=(
+            "往副屏的**待办板**加一条。这是给**人**看的待办，"
+            "不是 agent 的内部执行计划 —— 不要把你的步骤清单塞进来。\n"
+            "适合：需要用户后续处理的事、跨会话要记住的下一步。\n"
+            "文本 ≤24 个中文字。"
+        ),
+    )
+    def warden_add_todo(text: str) -> dict:
+        """往副屏待办板添加一条。"""
+        try:
+            out = svc.add_todo({"text": text})
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool(
+        title="修改一条已有待办",
+        description=(
+            "改掉副屏待办板上已有的一条（写错了、措辞要调整、范围变了）。\n"
+            "**改之前先想一下：是不是该直接删掉？** "
+            "如果那条已经没意义了，用 warden_remove_todo 比改它更干净。\n"
+            "定位用 todo_id（从 warden_list_recent 拿），"
+            "或者用 match 传一段文字做子串匹配；"
+            "match 匹配到多条会报错并列出候选，这时改用 todo_id。"
+        ),
+    )
+    def warden_update_todo(text: str, todo_id: str = "",
+                           match: str = "") -> dict:
+        """把一条已有待办改成新的文字。"""
+        text = (text or "").strip()
+        if not text:
+            return {"ok": False, "error": "新文字不能为空"}
+        tid, err = _resolve_todo(svc, todo_id, match)
+        if err:
+            return err
+        was = _todo_text(svc, tid)
+        try:
+            out = svc.update_todo(tid, text)
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "was": was, "now": text, **out}
+
+    @mcp.tool(
+        title="把一条待办标记为完成",
+        description=(
+            "勾上一条待办（做完了）。会记录完成时间，板上显示成划掉的样子。\n"
+            "和 warden_remove_todo 的区别：完成**留痕**，删除当作没发生过。"
+        ),
+    )
+    def warden_complete_todo(todo_id: str = "", match: str = "",
+                             done: bool = True) -> dict:
+        """标记待办完成/未完成。"""
+        tid, err = _resolve_todo(svc, todo_id, match)
+        if err:
+            return err
+        try:
+            out = svc.toggle_todo(tid, bool(done))
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "done": bool(done), **out}
+
+    @mcp.tool(
+        title="删除一条待办",
+        description=(
+            "把一条待办从副屏上彻底删掉。\n"
+            "和「完成」不同：完成是勾上、留痕；删除是它**本来就不该存在**"
+            "（记错了、重复了、作废了）。"
+        ),
+    )
+    def warden_remove_todo(todo_id: str = "", match: str = "") -> dict:
+        """删掉一条待办。"""
+        tid, err = _resolve_todo(svc, todo_id, match)
+        if err:
+            return err
+        try:
+            out = svc.remove_todo(tid)
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool(
+        title="挂起「需要你介入」告警",
+        description=(
+            "在副屏顶部显示一条高优先级告警。这是副屏上**最强的注意力信号**，"
+            "只在真的需要人做决定时使用（等待授权、无法自行判断、需要人工确认）。\n"
+            "不要用它来播报进度或成功消息 —— 那会让真正重要的告警被忽视。\n"
+            "问题解决后调 warden_clear_alert 清掉，否则会一直挂在屏幕顶端。"
+        ),
+    )
+    def warden_alert(title: str, detail: str = "") -> dict:
+        """挂起一条需要人介入的告警。title ≤15 字，detail ≤30 字。"""
+        try:
+            out = svc.raise_alert({"title": title, "detail": detail})
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool(
+        title="清除副屏告警",
+        description="清除当前挂在副屏顶部的「需要你介入」告警。",
+    )
+    def warden_clear_alert() -> dict:
+        """清除副屏告警。"""
+        try:
+            out = svc.clear_alert("")
+        except Exception as exc:                       # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, **out}
+
+    @mcp.tool(
+        title="副屏状态",
+        description="查看副屏服务当前的简报/待办/告警统计与设备最后拉取时间。",
+    )
+    def warden_status() -> dict:
+        """查看副屏状态。"""
+        board = svc.board(include_hidden=False)
+        return {
+            "ok": True,
+            "briefs": board.total_briefs,
+            "todos": board.total_todos,
+            "alert": board.alert.to_dict() if board.alert else None,
+            "device": svc.device_last_seen(),
+            "transport": "http（同步，直连 host）",
+        }
+
+    # ------------------------------------------------------------ 资源
+    #
+    # ⚠️ 两种 transport 要提供**同一套**资源和工具。
+    #    少一个的话，配成 HTTP 的终端就凭空少一个能力，
+    #    而用户不会去对比两种形态，只会觉得"这东西时好时坏"。
+
+    @mcp.resource("warden://board/current",
+                  description="副屏当前显示的完整内容（文本形式）")
+    def board_current() -> str:
+        board = svc.board(include_hidden=False)
+        lines = [f"简报 {board.total_briefs} 条 · 待办 {board.total_todos} 项"]
+        if board.alert:
+            lines.append(f"⚠ 告警：{board.alert.title}")
+        for b in board.briefs:
+            pin = "[钉]" if b.pinned else ""
+            lines.append(f"  - {pin}[{b.status}] {b.title} —— {b.summary}")
+        for t in board.todos:
+            lines.append(f"  - {'[x]' if t.done else '[ ]'} {t.text}")
+        return "\n".join(lines)
+
+    @mcp.resource("warden://board/health",
+                  description="副屏服务与设备最近一次拉取情况")
+    def board_health() -> str:
+        return json.dumps({
+            "transport": "http",
+            "device": svc.device_last_seen(),
+        }, ensure_ascii=False, indent=2)
+
+    return mcp
+
+
+# ---------------------------------------------------------------- 待办定位（HTTP 形态用）
+
+
+def _todo_text(svc: Any, todo_id: str) -> str:
+    board = svc.board(include_hidden=False)
+    return next((t.text for t in board.todos if t.id == todo_id), "")
+
+
+def _resolve_todo(svc: Any, todo_id: str, match: str) -> tuple[str | None, dict | None]:
+    """HTTP 形态的待办定位器。
+
+    和 stdio 形态的 ``resolve_todo_id`` **同一套规则**：
+    匹配到多条就报错并列候选，绝不替调用方猜。
+    区别只是数据来源（这里直接读 BoardService，不走 HTTP）。
+    """
+    todo_id = (todo_id or "").strip()
+    match = (match or "").strip()
+
+    if not todo_id and not match:
+        return None, {
+            "ok": False,
+            "error": "要指定操作哪一条：给 todo_id，或者给 match",
+            "hint": "先用 warden_list_recent 看有哪些待办",
+        }
+
+    board = svc.board(include_hidden=False)
+    todos = [{"id": t.id, "text": t.text} for t in board.todos]
+
+    if not todo_id:
+        needle = match.lower()
+        hits = [t for t in todos if needle in t["text"].lower()]
+        if not hits:
+            return None, {"ok": False, "error": f"没有待办匹配 {match!r}",
+                          "todos": todos}
+        if len(hits) > 1:
+            return None, {
+                "ok": False,
+                "error": f"{match!r} 匹配到 {len(hits)} 条，请用 todo_id 指定",
+                "candidates": hits,
+            }
+        todo_id = hits[0]["id"]
+
+    if not any(t["id"] == todo_id for t in todos):
+        return None, {"ok": False, "error": f"看板上没有 id={todo_id} 的待办",
+                      "todos": todos}
+
+    return todo_id, None
+
+
 def main() -> None:
     build_server().run(transport="stdio")
 

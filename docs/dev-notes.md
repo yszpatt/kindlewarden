@@ -776,6 +776,94 @@ python -m kindlewarden.cli preview --out mockups/out/preview.png
 
 ---
 
+## MCP 走 HTTP：把 ASGI 塞进 ThreadingHTTPServer
+
+`warden serve --mcp` 会在**同一个端口**上再提供 `POST /mcp`，
+客户端配置里只写一个 URL，没有 exe、没有本地发件箱。
+
+难点在于两边不是一套东西：MCP 的 streamable-http 是 **ASGI**，
+而本项目的服务是 `ThreadingHTTPServer`。
+
+**不这么做**：再开一个端口 + 反向代理。
+多一个端口就多一个要记的地址，多一个代理就多一个会坏的环节。
+
+**这么做**：`asgi_host.AsgiHost` 起一个专用后台线程跑事件循环，
+线程启动时进入一次 `lifespan_context`（**这是关键**），
+之后每个请求用 `run_coroutine_threadsafe` 投进去。
+
+### 坑 1：不跑 lifespan 会直接炸
+
+第一版把 ASGI app 当普通函数驱动，报：
+
+```
+RuntimeError: Task group is not initialized. Make sure you use run().
+```
+
+因为 streamable-http 依赖一个**常驻的 anyio task group**（session manager）。
+必须先进 `async with app.router.lifespan_context(app)`，
+再在这个上下文里处理请求 —— 这样 session 才能跨请求复用
+（实测 `initialize` 拿到的 session id 能在后续 `tools/list` 里用）。
+
+### 坑 2：停的时候不能让循环直接死
+
+第一版 `stop()` 用 `loop.call_soon_threadsafe(loop.stop)` ——
+循环被掐掉，`lifespan_context` 的退出路径不执行，
+里面的后台任务（`sse_starlette` 的 shutdown watcher 等）就变成：
+
+```
+Task was destroyed but it is pending!
+```
+
+功能上没坏，但测试输出被刷屏，而且**退出不干净本身是个隐患**。
+改成用 `asyncio.Event` 请它退出（唤醒 `boot()` 里的 `await stop.wait()`），
+让 `async with` 正常走到 `__aexit__`，最后清一遍残留任务。
+
+### 坑 3：Host 校验会把局域网访问全拒掉
+
+MCP 的 streamable-http **默认开 DNS-rebinding 防护**，
+而 `allowed_hosts` **默认是空列表** —— 于是任何 Host 都不匹配：
+
+```
+421 Misdirected Request
+Invalid Host header
+```
+
+实测：**不配的话，连 `127.0.0.1:8577/mcp` 都是 421。**
+
+而且它**不支持** `"*"` 这种通配（我第一版就写了 `["*"]`，
+结果连本机都被拒）。看实现（`_validate_host`）只有两种匹配方式：
+
+```
+精确匹配完整的 Host 值（**含端口**，如 192.168.9.198:8577）
+host:*  —— 端口任意
+```
+
+所以按本机实际地址生成 `["127.0.0.1:*", "localhost:*", "192.168.9.198:*", ...]`。
+
+**这个默认值对"只给本机 agent 用"是合理的，但本项目的副屏本来就是局域网服务** ——
+Kindle 按 IP 拉图、别的机器按 IP 连 MCP。踩到这个坑时的现象是
+「本机好好的、别的机器连不上」，很容易误判成防火墙。
+
+### 坑 4：503 之前要先把请求体读完
+
+MCP 没启用时回 503，但**没读正文**。客户端的 body 还在发，
+服务端一关连接，客户端拿到的是 `ConnectionAbortedError`（WinError 10053），
+**而不是那条本该读到的 503 提示**。于是"启动时忘了加 `--mcp`"这件事，
+用户看到的是一句网络错误，完全联系不到真正的原因。
+
+先 `rfile.read(length)` 读完再回响应。
+
+### 坑 5：`do_DELETE` 要写在 Handler 上
+
+第一版写到了 `RobustHTTPServer`（server 类）上，
+而处理请求的是动态生成的 `Handler` —— 于是 DELETE 落到
+`BaseHTTPRequestHandler` 的默认实现，回 **501 Unsupported method**。
+
+功能不受影响（客户端只是断开时清理 session），但每次断开都打一行
+`Session termination failed: 501`，而且 501 容易被误读成"服务不支持 MCP"。
+
+---
+
 ## 改一条已有待办
 
 后端一直就支持（`todo.edited` 事件 + `/todo/update` 端点 + 管理页原地编辑），

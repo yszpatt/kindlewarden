@@ -698,6 +698,83 @@ class Handler(BaseHTTPRequestHandler):
         if args and str(args[1] if len(args) > 1 else "").startswith(("4", "5")):
             super().log_message(fmt, *args)
 
+    def _serve_mcp(self) -> None:
+        """把请求转交给进程内的 MCP ASGI app（``/mcp``）。
+
+        MCP 走 HTTP 的形态：客户端配置里只写一个 URL，没有 exe、
+        没有本地队列、也不用管 Python 环境。
+
+        实现上**不**另开端口、也不反向代理 —— ASGI app 由
+        :class:`~kindlewarden.asgi_host.AsgiHost` 跑在同一进程的后台
+        事件循环里（lifespan 常驻，session 跨请求复用），这里只是
+        把 HTTP 报文喂进去再把响应写回来。
+
+        为什么值得这么绕：多一个端口就多一个要记住的地址，
+        多一个代理就多一个会坏的环节。**一个 URL 打天下。**
+        """
+        host = self.server.asgi_host          # type: ignore[attr-defined]
+
+        # ⚠️ 先把正文**读完再**回任何响应。
+        #
+        # 踩过：MCP 没启用时直接 return 503，而客户端的请求体还在发 ——
+        # 服务端一关连接，客户端就拿到 ConnectionAbortedError
+        # （WinError 10053 / ECONNRESET），而不是那条本该读到的 503 提示。
+        # 于是"启动时忘了加 --mcp"这件事，用户看到的是一句网络错误，
+        # 完全联系不到真正的原因。
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        body = b""
+        if length > 0:
+            body = self.rfile.read(length)
+
+        if host is None:
+            return self._error(
+                503, "MCP over HTTP 未启用。启动服务时加 --mcp 打开它。")
+
+        # 把请求头原样转过去（MCP 靠 mcp-session-id / Accept 等头工作）
+        headers = []
+        for k, v in self.headers.items():
+            headers.append((k.lower().encode("latin-1"),
+                            v.encode("latin-1", errors="replace")))
+
+        split = urlsplit(self.path)
+        raw_path = split.path.encode("latin-1", errors="replace")
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": self.command,
+            "scheme": "http",
+            "path": split.path,
+            "raw_path": raw_path,
+            "query_string": (split.query or "").encode("latin-1"),
+            "root_path": "",
+            "headers": headers,
+            "client": self.client_address,
+            "server": (self.server.server_address[0],
+                       self.server.server_address[1]),
+        }
+
+        try:
+            status, resp_headers, payload = host.call(scope, body)
+        except Exception as exc:                       # noqa: BLE001
+            # MCP 端点出错不该连累整个服务 —— 这条路径和看板渲染是独立的
+            return self._error(500, f"MCP 处理失败：{type(exc).__name__}: {exc}")
+
+        self.send_response(status)
+        for k, v in resp_headers:
+            name = k.decode("latin-1")
+            # Content-Length 由我们自己写，避免和 ASGI 给的对不上
+            if name.lower() in ("content-length", "transfer-encoding"):
+                continue
+            self.send_header(name, v.decode("latin-1", errors="replace"))
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(payload)
+
     def _query(self) -> dict[str, list[str]]:
         return parse_qs(urlsplit(self.path).query)
 
@@ -721,6 +798,11 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         svc = self.service
         query = self._query()
+
+        # streamable-http 用 GET 开 SSE 流（可选，客户端不一定会用）。
+        # 一并转过去，免得客户端试探时拿到 404 就放弃。
+        if path in ("/mcp", "/mcp/"):
+            return self._serve_mcp()
 
         if path in ("/", "/index.html", "/admin"):
             return self._send(200, ADMIN_HTML.encode("utf-8"),
@@ -889,6 +971,25 @@ class Handler(BaseHTTPRequestHandler):
         self._error(404, "未找到：" + path)
 
     def do_HEAD(self) -> None:  # noqa: N802
+        return self.do_GET()
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        """streamable-http 用 DELETE 显式结束一个 session。
+
+        ⚠️ 必须定义在 **Handler** 上（处理请求的是它），
+        不是 RobustHTTPServer（那是 server 类，只负责 accept）。
+
+        踩过：一开始放错了类，于是 DELETE 一路落到
+        ``BaseHTTPRequestHandler`` 默认实现 → **501 Unsupported method**。
+        现象是客户端每次断开都打一行
+        「Session termination failed: 501」—— 功能不受影响，
+        但日志里一直有噪音，而且 501 容易被误读成"服务不支持 MCP"。
+        """
+        if urlsplit(self.path).path in ("/mcp", "/mcp/"):
+            return self._serve_mcp()
+        return self._error(404, "not found")
+
+
         self.do_GET()
 
     # -------------------------------------------------- POST
@@ -896,6 +997,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
         svc = self.service
+
+        # ⚠️ /mcp 必须**在读 JSON 之前**处理。
+        #
+        # 它是 JSON-RPC，但正文要**原样**交给 ASGI app ——
+        # 先经过 _read_json 解析再重新序列化，会改变字节
+        # （键序、空白、编码），而 MCP 那边是按原始报文处理的。
+        if path in ("/mcp", "/mcp/"):
+            return self._serve_mcp()
+
         try:
             payload = self._read_json()
         except (ValueError, json.JSONDecodeError) as exc:
@@ -1108,12 +1218,20 @@ def lan_addresses() -> list[str]:
     return ordered + rest
 
 
-def startup_banner(*, host: str, port: int, lan: list[str], cfg: Config) -> list[str]:
+def startup_banner(*, host: str, port: int, lan: list[str], cfg: Config,
+                   mcp: bool = False) -> list[str]:
     """启动提示。纯函数，便于测试 —— 这段文案里藏着一类真实故障的警告。"""
     lines = [
         "kindlewarden 副屏服务已启动",
         f"  控制台      http://127.0.0.1:{port}/",
     ]
+
+    if mcp:
+        # 把**可直接粘贴**的客户端配置打出来。
+        # 这一行存在的意义：MCP 的客户端配置是最容易写错的地方
+        # （路径转义、端口、transport 类型），给一段能直接用的比让人照文档拼强。
+        lines.append(f'  MCP         http://127.0.0.1:{port}/mcp   '
+                     f'（客户端配置：type=http）')
 
     if host in ("0.0.0.0", "::", ""):
         if lan:
@@ -1167,6 +1285,12 @@ class RobustHTTPServer(ThreadingHTTPServer):
     # 由 ``serve()`` 给出明确的提示（见那里的处理）。
     allow_reuse_address = False
 
+    #: 进程内的 MCP ASGI 宿主（``--mcp`` 时才有值，否则 None）。
+    #:
+    #: 放在 server 上而不是模块全局：一个进程只该有一个 BoardService，
+    #: MCP 也必须跟着同一个走，否则两边看到的事件流会不一样。
+    asgi_host = None
+
     def handle_error(self, request, client_address) -> None:
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionResetError, ConnectionAbortedError,
@@ -1181,14 +1305,31 @@ class RobustHTTPServer(ThreadingHTTPServer):
         sys.stderr.flush()
 
 
-def build_server(cfg: Config) -> RobustHTTPServer:
+def build_server(cfg: Config, *, enable_mcp: bool = False) -> RobustHTTPServer:
     service = BoardService(cfg)
     handler = type("BoundHandler", (Handler,), {"service": service})
     httpd = RobustHTTPServer((cfg.server.host, cfg.server.port), handler)
+
+    if enable_mcp:
+        # MCP 挂在**同一个进程**里：
+        #   * 共用同一个 BoardService（否则两边看到的事件流会不一样）
+        #   * 客户端只需要一个 URL，没有 exe、没有本地发件箱
+        #
+        # ⚠️ 起不来时**要吵**。MCP 是 agent 的主通道，
+        #    它静默不可用的话，agent 那边只会看到"连接被关闭"，
+        #    和这次要修的那个报错一模一样 —— 白改。
+        from .asgi_host import AsgiHost
+        from .mcp_server import build_http_server
+
+        host = AsgiHost(build_http_server(service).streamable_http_app(),
+                        name="warden-mcp")
+        host.start()
+        httpd.asgi_host = host
+
     return httpd
 
 
-def serve(cfg: Config | None = None) -> None:
+def serve(cfg: Config | None = None, *, enable_mcp: bool = False) -> None:
     cfg = cfg or load_config()
 
     # ⚠️ 端口占用要**明确报错**，不能静默失败。
@@ -1199,7 +1340,7 @@ def serve(cfg: Config | None = None) -> None:
     #
     # 对常驻服务来说，"我起不来"必须说得清清楚楚。
     try:
-        httpd = build_server(cfg)
+        httpd = build_server(cfg, enable_mcp=enable_mcp)
     except OSError as exc:
         if getattr(exc, "errno", None) in (48, 98, 10048) or "10048" in str(exc):
             port = cfg.server.port
@@ -1218,7 +1359,8 @@ def serve(cfg: Config | None = None) -> None:
     host, port = httpd.server_address[0], httpd.server_address[1]
 
     for line in startup_banner(host=host, port=port,
-                               lan=lan_addresses(), cfg=cfg):
+                               lan=lan_addresses(), cfg=cfg,
+                               mcp=enable_mcp):
         print(line)
     # 立刻刷出来 —— 常驻服务被重定向到日志时，缓冲会让日志看起来是空的
     sys.stdout.flush()

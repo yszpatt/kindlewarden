@@ -74,7 +74,37 @@ python -m kindlewarden.cli seed-demo
 claude mcp add kindlewarden -- python -m kindlewarden.mcp_server
 ```
 
-设置副屏服务地址（agent 在别的机器上时）：
+**推荐：走 HTTP**（不用装东西，配置里就一个 URL）：
+
+```json
+{
+  "mcpServers": {
+    "kindlewarden": {
+      "type": "http",
+      "url": "http://<host>:8577/mcp"
+    }
+  }
+}
+```
+
+服务端要带 `--mcp` 启动：
+
+```bash
+warden serve --mcp
+```
+
+| | stdio 瘦客户端 | HTTP |
+|---|---|---|
+| 配置 | 每个终端装一次，要填 exe 路径 | **一个 URL** |
+| 发简报 | 写本地队列立即返回，后台异步投递 | **同步**，返回即已写入 |
+| host 挂了 | agent **完全无感** | tool call 直接报错 |
+| 跨机器 | 要各装一次 | 天然支持 |
+
+> **取舍**：HTTP 更省事，但丢掉了「副屏永远不影响主屏」这条保证 ——
+> host 重启或断网时，agent 会拿到错误。追求省事选 HTTP，
+> 追求 agent 完全不受副屏影响选 stdio。
+
+设置副屏服务地址（stdio 形态下 agent 在别的机器上时）：
 
 ```bash
 KINDLEWARDEN_URL=http://192.168.1.50:8577
