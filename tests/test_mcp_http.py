@@ -277,3 +277,84 @@ def test_explicit_allowed_hosts_is_respected(tmp_path):
     assert settings.allowed_hosts == ["example.test:*"], settings.allowed_hosts
     assert settings.enable_dns_rebinding_protection is True
 
+
+# ---------------------------------------------------------------- 容器部署
+#
+# 容器是跑 MCP 最省事的位置（起一个，所有终端指过来），所以镜像**默认开 MCP**。
+# 但容器里有个隐蔽的坑：Host 白名单是按"本机地址"算的，
+# 而容器算出来的是**自己的** 172.x —— 客户端连的是宿主机的 192.168.x，
+# 对不上 → 每个请求 421，而报错只说 "Invalid Host header"。
+
+
+def test_public_host_env_feeds_the_mcp_allowlist(monkeypatch):
+    """``KINDLEWARDEN_PUBLIC_HOST`` 必须进 MCP 的 Host 白名单。
+
+    这是容器能用的**关键**：容器自动探测到的地址是错的，
+    只能靠这个环境变量告诉它"客户端会用什么地址连我"。
+    """
+    from kindlewarden.mcp_server import _default_allowed_hosts
+
+    monkeypatch.setenv("KINDLEWARDEN_PUBLIC_HOST", "192.168.1.50")
+    hosts = _default_allowed_hosts()
+    assert "192.168.1.50:*" in hosts, (
+        f"设了 PUBLIC_HOST 却没进白名单：{hosts} —— 容器里 /mcp 会 421"
+    )
+
+
+def test_container_without_public_host_warns(monkeypatch):
+    """容器里没设对外地址时要**主动警告**。
+
+    不然现象只是「421 Invalid Host header」，
+    从这句话完全推不到"容器不知道自己的对外地址"。
+    """
+    from kindlewarden.mcp_server import warn_if_container_without_public_host
+
+    monkeypatch.setattr("kindlewarden.mcp_server.in_container", lambda: True)
+    monkeypatch.delenv("KINDLEWARDEN_PUBLIC_HOST", raising=False)
+
+    warn = warn_if_container_without_public_host()
+    assert warn, "容器里没设 PUBLIC_HOST 却没警告"
+    assert "KINDLEWARDEN_PUBLIC_HOST" in warn, warn
+    assert "421" in warn, f"警告里要点出症状是 421：{warn}"
+
+
+def test_container_with_public_host_is_quiet(monkeypatch):
+    """设了就不要再嚷嚷。"""
+    from kindlewarden.mcp_server import warn_if_container_without_public_host
+
+    monkeypatch.setattr("kindlewarden.mcp_server.in_container", lambda: True)
+    monkeypatch.setenv("KINDLEWARDEN_PUBLIC_HOST", "192.168.1.50")
+    assert warn_if_container_without_public_host() is None
+
+
+def test_not_in_container_never_warns(monkeypatch):
+    """普通部署（非容器）不该看到这条警告 —— 那条建议对它没意义。"""
+    from kindlewarden.mcp_server import warn_if_container_without_public_host
+
+    monkeypatch.setattr("kindlewarden.mcp_server.in_container", lambda: False)
+    monkeypatch.delenv("KINDLEWARDEN_PUBLIC_HOST", raising=False)
+    assert warn_if_container_without_public_host() is None
+
+
+def test_dockerfile_enables_mcp_by_default():
+    """镜像的默认 CMD 必须带 ``--mcp``。
+
+    这是个**产品决定**（容器默认开 MCP），值得用测试钉住 ——
+    不然哪天有人重写 CMD 时很容易漏掉，而症状是
+    "容器里 /mcp 是 503"，看着像没实现，实际只是没开。
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "Dockerfile").read_text(encoding="utf-8")
+    # 取最后那条 CMD（启动命令）
+    cmd_lines = [ln.strip() for ln in text.splitlines()
+                 if ln.strip().startswith("CMD [")]
+    assert cmd_lines, "Dockerfile 里没有 CMD"
+    start = cmd_lines[-1]
+    assert '"--mcp"' in start or "'--mcp'" in start, (
+        f"镜像的启动命令没带 --mcp：{start}"
+    )
+    assert "0.0.0.0" in start, f"没绑 0.0.0.0，容器外连不上：{start}"
+
+

@@ -654,6 +654,16 @@ def build_server(outbox: Outbox | None = None):
 # 中间再绕一次自己的 HTTP 反而多一个失败点。
 
 
+def in_container() -> bool:
+    """是不是跑在容器里（Docker / Podman）。
+
+    判据用 ``/.dockerenv`` 或 ``/run/.containerenv`` ——
+    这是最稳的：读 cgroup 在 cgroup v2 上已经不可靠了。
+    """
+    return (Path("/.dockerenv").exists()
+            or Path("/run/.containerenv").exists())
+
+
 def _default_allowed_hosts() -> list[str]:
     """按本机实际地址生成 MCP 的 Host 白名单（含端口通配）。
 
@@ -661,6 +671,20 @@ def _default_allowed_hosts() -> list[str]:
 
     ⚠️ 必须带 ``:*`` —— 校验是拿**完整的 Host 头**（含端口）去比对的，
     只写 IP 匹配不上 ``192.168.9.198:8577``。
+
+    ⚠️⚠️ **容器里这个函数算出来的地址是错的**，要说清楚。
+
+    ``lan_addresses()`` 给的是"本机的地址"，而在容器里那是
+    **容器自己的**地址（``172.17.0.x``）—— 客户端连的是**宿主机**的
+    局域网地址（``192.168.x.x:8577``），两者对不上，于是每个请求都 421。
+
+    补救靠 ``KINDLEWARDEN_PUBLIC_HOST``：``lan_addresses()`` 已经支持
+    用它覆盖，所以只要用户按 docker-compose 里的注释设了它，
+    这里自动就是对的。
+
+    没设的时候**要吵**（见 ``warn_if_container_without_public_host``）——
+    否则现象只是"421 Invalid Host header"，而真正的原因是
+    "容器不知道自己的对外地址"。
     """
     hosts = ["127.0.0.1", "localhost", "[::1]"]
     try:
@@ -674,6 +698,27 @@ def _default_allowed_hosts() -> list[str]:
         if h and h not in seen:
             seen.append(h)
     return [f"{h}:*" for h in seen]
+
+
+def warn_if_container_without_public_host() -> str | None:
+    """容器里没设 ``KINDLEWARDEN_PUBLIC_HOST`` 时给一句警告，否则 None。
+
+    返回的是**要打印的文案**（不直接打印），方便测试断言。
+
+    为什么值得专门警告：这种情况下 MCP 会**每个请求都 421**，
+    而报错只说 ``Invalid Host header`` ——
+    从这句话推不到"容器不知道自己的对外地址"。
+    """
+    if not in_container():
+        return None
+    if (os.environ.get("KINDLEWARDEN_PUBLIC_HOST") or "").strip():
+        return None
+    return (
+        "⚠ 容器里没设 KINDLEWARDEN_PUBLIC_HOST —— MCP 的 Host 校验会拒绝"
+        "所有外部请求（返回 421 Invalid Host header）。\n"
+        "  容器探测到的是自己的地址（172.x），而客户端连的是宿主机的地址。\n"
+        "  修法：给容器加环境变量 KINDLEWARDEN_PUBLIC_HOST=<宿主机的局域网IP>"
+    )
 
 
 def build_http_server(svc: Any, *, allowed_hosts: list[str] | None = None):

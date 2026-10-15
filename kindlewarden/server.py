@@ -1319,7 +1319,14 @@ def build_server(cfg: Config, *, enable_mcp: bool = False) -> RobustHTTPServer:
         #    它静默不可用的话，agent 那边只会看到"连接被关闭"，
         #    和这次要修的那个报错一模一样 —— 白改。
         from .asgi_host import AsgiHost
-        from .mcp_server import build_http_server
+        from .mcp_server import build_http_server, warn_if_container_without_public_host
+
+        # 容器里没设对外地址 → MCP 会每个请求都 421，而报错只说
+        # "Invalid Host header"，推不到真正原因。这里主动喊一句。
+        warn = warn_if_container_without_public_host()
+        if warn:
+            print(warn)
+            sys.stdout.flush()
 
         host = AsgiHost(build_http_server(service).streamable_http_app(),
                         name="warden-mcp")

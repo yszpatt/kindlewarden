@@ -67,4 +67,15 @@ sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8577/health', timeout=3).
 
 # 显式绑 0.0.0.0：只绑回环的话容器外永远连不上，
 # 而现象只是「页面无法显示」，很难联想到是监听地址。
-CMD ["warden", "serve", "--host", "0.0.0.0", "--port", "8577"]
+#
+# `--mcp`：容器部署默认**同时提供 MCP**（POST /mcp，同一个端口）。
+#
+# 容器是跑 MCP 的理想位置 —— 它没有 exe、不用在每台终端装东西，
+# 客户端配置里只写一个 URL。而这正是容器最省事的地方：
+# 起一个容器，所有终端指过来就行。
+#
+# ⚠️ 但**必须同时设 KINDLEWARDEN_PUBLIC_HOST**，否则 /mcp 会返回 421。
+#    原因见 mcp_server._default_allowed_hosts 的说明：
+#    MCP 会校验 Host 头，而容器里自动探测到的是**容器自己的**地址
+#    （172.x），不是客户端实际连的那个 —— 于是任何请求都对不上。
+CMD ["warden", "serve", "--host", "0.0.0.0", "--port", "8577", "--mcp"]

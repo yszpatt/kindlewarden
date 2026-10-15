@@ -1,12 +1,15 @@
 # kindlewarden 副屏 Host
 #
 #   docker compose up -d
-#   控制台  http://127.0.0.1:8577/
+#   控制台   http://127.0.0.1:8577/
+#   MCP      http://192.168.1.50:8577/mcp     ← 客户端填这个
 #
-# ⚠️ 上线前**必须**改下面两处，否则 Kindle 连不上：
+# ⚠️ 上线前**必须**改下面两处，否则连不上：
 #     1. KINDLEWARDEN_PUBLIC_HOST —— 填**宿主机的局域网 IP**
 #        容器里自动探测到的是容器自己的地址（172.x），那个地址在局域网里
 #        不存在。Kindle 照着连的现象只是「页面无法显示」，很难联想到是地址问题。
+#        对 MCP 更要紧：Host 头对不上时服务会回
+#        **421 Invalid Host header**，而这个报错完全看不出是"地址没设"。
 #     2. ports 里的端口，和你填进插件的服务端地址保持一致
 #
 # 查宿主机的局域网 IP：
@@ -21,13 +24,22 @@ services:
     container_name: kindlewarden
     restart: unless-stopped
 
+    # 镜像的默认 CMD 已经带了 --mcp，这里再写一遍是**刻意的**：
+    # 让人翻 compose 就知道"MCP 是开着的、地址是这个"。
+    # 容器是跑 MCP 最省事的位置 —— 起一个，所有终端指过来，
+    # 不用在每台机器上装东西、也不用碰 exe 路径。
+    command: ["warden", "serve", "--host", "0.0.0.0", "--port", "8577", "--mcp"]
+
     ports:
-      # 左边是宿主机端口，右边是容器内端口（改左边即可）
+      # 左边是宿主机端口，右边是容器内端口（改左边即可）。
+      # 看板和 MCP **共用这一个端口**（MCP 在 /mcp）。
       - "8577:8577"
 
     environment:
       # ⚠️ 改成你宿主机的局域网 IP。
-      #    这决定了启动横幅里打印的「Kindle 端 http://…」是哪个地址。
+      #    它同时决定两件事：
+      #      * 启动横幅里打印的「Kindle 端 http://…」
+      #      * **MCP 的 Host 白名单**（不设的话 /mcp 会 421）
       KINDLEWARDEN_PUBLIC_HOST: "192.168.1.50"
 
     volumes:
