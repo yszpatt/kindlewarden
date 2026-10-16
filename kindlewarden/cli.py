@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -868,6 +869,29 @@ def cmd_doctor(args: argparse.Namespace, cfg: Config) -> int:
         print(f"         {local_err}")
         print(f"         启动： warden serve")
         return 1
+
+    # ---- 1.5 时区（部署在容器里时最容易错的一项）
+    #
+    # 为什么放在这么靠前：它**不影响连通性**，所以不会被别的检查发现，
+    # 而现象是"看板上的时刻差 8 小时"—— 很难往时区上想。
+    # 容器默认 UTC，配了 display.timezone 才是对的。
+    from .render import current_timezone, set_timezone
+    from . import render as _render
+
+    _render.set_timezone(cfg.display.timezone)
+    tz_now = current_timezone()
+    sample = _render.format_clock(time.time())
+    if cfg.display.timezone:
+        if "取不到" in tz_now:
+            print(f"  [WARN] 时区 {cfg.display.timezone!r} 解析不了，"
+                  f"现在按本机时区显示（{sample}）")
+            print(f"         装 tzdata，或改用固定偏移（如 \"+08:00\"）")
+        else:
+            print(f"  [ OK ] 时区 {tz_now}（现在 {sample}）")
+    else:
+        print(f"  [ -- ] 时区未配置，跟随进程本地（{tz_now}，现在 {sample}）")
+        print(f"         容器部署**必须**设 display.timezone，"
+              f"否则会比本地时间早 8 小时")
 
     # ---- 2. 局域网地址能不能连（这一步能抓住「只绑回环」这个坑）
     from .server import is_likely_virtual, lan_addresses

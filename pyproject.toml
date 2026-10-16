@@ -9,7 +9,18 @@ description = "把 AI 任务的完成简报推送到 Kindle 电子墨水副屏"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
-dependencies = ["Pillow>=10.0"]
+dependencies = [
+    "Pillow>=10.0",
+    # ⚠️ 时区数据库。
+    #
+    # 渲染时刻用 `zoneinfo.ZoneInfo("Asia/Shanghai")`，而**系统不一定有
+    # tzdata**：Windows 上没有，python:3.x-slim 这类精简镜像也常被裁掉。
+    # 缺了它，配了 `display.timezone` 也解析不出来
+    # （我们那边会打警告并退回进程本地时区）。
+    #
+    # 装上这个包，`zoneinfo` 会自动用它作为后备，任何平台都能认 IANA 名字。
+    "tzdata>=2024.1",
+]
 keywords = ["kindle", "eink", "mcp", "dashboard", "agent", "koreader"]
 classifiers = [
     "Development Status :: 3 - Alpha",

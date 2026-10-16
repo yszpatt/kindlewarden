@@ -519,13 +519,117 @@ _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日
 HEALTH_TEXT = {"ok": "源正常", "stale": "源陈旧", "down": "源不可用"}
 
 
+# ---------------------------------------------------------------- 时区
+#
+# ⚠️ 为什么不能直接用 ``datetime.fromtimestamp()``。
+#
+# 它按**进程的本地时区**转换，而 Docker 容器默认是 **UTC** ——
+# 于是部署在容器里时，画面上所有时刻都比北京时间早 8 小时。
+#
+# 实测踩到：服务跑在 192.168.9.57 的容器里，看板上印 "02:10"，
+# 而当时北京时间是 10:10。查了很久才确认**时钟本身是准的**
+# （HTTP Date 头只差 1 秒、时间戳也是标准 UTC 秒）——
+# 差的只是**渲染时用的时区**。
+#
+# 这类问题很难从现象反推：
+#   * 时间戳是对的 → 以为数据没问题
+#   * 容器时钟是准的 → 以为机器没问题
+#   * 但显示就是错的 → 卡在中间
+#
+# 所以时区要**显式可配**（``display.timezone``），不再默默跟着
+# 进程走。配了就用配的，没配才退回进程本地时区（保持向后兼容）。
+
+_TZ = None                      # 当前生效的 tzinfo；None = 用进程本地时区
+_TZ_NAME = ""                   # 它的名字，供诊断显示
+
+
+def set_timezone(name: str | None) -> str:
+    """设置渲染用的时区。返回实际生效的名字。
+
+    接受 IANA 名字（``Asia/Shanghai``）或固定偏移（``+08:00`` / ``UTC``）。
+    空/None → 退回**进程本地时区**（老行为）。
+
+    ⚠️ 用 Python 3.9+ 的 ``zoneinfo``，但**不依赖 tzdata 包**：
+    容器里通常没有 ``/usr/share/zoneinfo``。所以这里内置了
+    "UTC" 和固定偏移的解析，IANA 名字则尽力而为 ——
+    取不到就退回本地时区，而不是让服务起不来。
+    """
+    global _TZ, _TZ_NAME
+    name = (name or "").strip()
+
+    if not name:
+        _TZ, _TZ_NAME = None, ""
+        return ""
+
+    # 固定偏移："+08:00" / "-05:30" / "UTC+8" 之类
+    m = re.fullmatch(r"(?:UTC|GMT)?\s*([+-])(\d{1,2})(?::?(\d{2}))?", name,
+                     re.I)
+    if m:
+        sign = 1 if m.group(1) == "+" else -1
+        hh, mm = int(m.group(2)), int(m.group(3) or 0)
+        _TZ = _dt.timezone(sign * _dt.timedelta(hours=hh, minutes=mm))
+        _TZ_NAME = name
+        return name
+
+    if name.upper() == "UTC":
+        _TZ = _dt.timezone.utc
+        _TZ_NAME = "UTC"
+        return "UTC"
+
+    # IANA 名字（需要系统 tzdata 或 Python 的 tzdata 包）
+    try:
+        from zoneinfo import ZoneInfo
+        _TZ = ZoneInfo(name)
+        _TZ_NAME = name
+        return name
+    except Exception as exc:                               # noqa: BLE001
+        # ⚠️ 取不到时**不能静默退回本地时区**。
+        #
+        # 踩过：Windows 上没有 tzdata，写 "Asia/Shanghai" 会抛
+        # ZoneInfoNotFoundError；第一版把异常吞掉、退回本地时区 ——
+        # 结果**配置看着生效了、实际没生效**，在某些环境里
+        # 又会悄悄差 8 小时。这正是这类 bug 最坏的形态。
+        #
+        # 所以：**打警告**（stderr），并记下原因供 doctor 显示。
+        import sys as _sys
+        _sys.stderr.write(
+            f"[kindlewarden] 时区 {name!r} 取不到（{type(exc).__name__}），"
+            f"已退回进程本地时区。\n"
+            f"  修法：装 tzdata（`pip install tzdata`），"
+            f'或改用固定偏移（如 "+08:00"，不依赖 tzdata）。\n'
+        )
+        _TZ, _TZ_NAME = None, f"（{name} 取不到，用进程本地时区）"
+        return _TZ_NAME
+
+
+def current_timezone() -> str:
+    """当前生效的时区名（供诊断与测试）。"""
+    if _TZ is not None:
+        return _TZ_NAME
+    # 没配时，报出进程本地时区的真实名字，方便排查
+    try:
+        return f"进程本地 {_dt.datetime.now().astimezone().tzname()}"
+    except Exception:                                      # noqa: BLE001
+        return "进程本地"
+
+
+def _local(ts: float) -> _dt.datetime:
+    """把 UTC 秒转成"该显示的时刻"。
+
+    配了时区就用它；没配就用进程本地时区（老行为）。
+    ``fromtimestamp`` 带 tz 参数时会把结果**转换**到那个时区 ——
+    正是我们要的语义。
+    """
+    return _dt.datetime.fromtimestamp(ts, _TZ)
+
+
 def format_date(ts: float) -> str:
-    dt = _dt.datetime.fromtimestamp(ts)
+    dt = _local(ts)
     return f"{dt.year}年{dt.month}月{dt.day}日 {_WEEKDAYS[dt.weekday()]}"
 
 
 def format_clock(ts: float) -> str:
-    return _dt.datetime.fromtimestamp(ts).strftime("%H:%M")
+    return _local(ts).strftime("%H:%M")
 
 
 # ---------------------------------------------------------------- 各板块
@@ -841,6 +945,11 @@ def _render_empty(img: Image.Image, d: ImageDraw.ImageDraw, cfg: Config,
 def render_board(board: Board, cfg: Config, *, now: float,
                  fonts: FontBook | None = None, health: str = "ok") -> tuple[Image.Image, Layout]:
     """渲染副屏。返回 ``(图像, 布局)`` —— 布局一并返回便于测试和调试。"""
+    # ⚠️ 先按时区配置**定好**要用的时区，再画任何东西。
+    #    漏掉这一句的话所有时刻都会退回进程本地时区 ——
+    #    在容器（UTC）里就是"差 8 小时"。
+    set_timezone(cfg.display.timezone)
+
     f = fonts or FontBook()
     img = Image.new("L", (CANVAS_W, CANVAS_H), WHITE)
     d = ImageDraw.Draw(img)
@@ -912,6 +1021,7 @@ def render_offline(cfg: Config, *, now: float, fonts: FontBook | None = None) ->
     这样「连接中断」这个提示**不需要在 Kindle 上画中文** ——
     FBInk 的内置字体没有 CJK，而服务端渲染任意中文都是免费的。
     """
+    set_timezone(cfg.display.timezone)      # 这时区配置对所有渲染入口都适用
     f = fonts or FontBook()
     img = Image.new("L", (CANVAS_W, CANVAS_H), WHITE)
     d = ImageDraw.Draw(img)
@@ -1067,6 +1177,7 @@ def render_detail(brief: Brief, cfg: Config, *, now: float,
     服务端保证不在那个矩形里画任何东西，插件按它画「退出」按钮。
     踩过一次两个按钮重叠的坑（两边各算各的位置），所以现在由服务端定义一次。
     """
+    set_timezone(cfg.display.timezone)
     f = fonts or FontBook()
     img = Image.new("L", (CANVAS_W, CANVAS_H), WHITE)
     d = ImageDraw.Draw(img)

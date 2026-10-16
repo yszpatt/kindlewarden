@@ -154,10 +154,32 @@ docker build -t kindlewarden .
 docker run -d --name kindlewarden \
   -p 8577:8577 \
   -e KINDLEWARDEN_PUBLIC_HOST=192.168.1.50 \
+  -e TZ=Asia/Shanghai \
   -v warden-data:/data \
   --restart unless-stopped \
   kindlewarden
 ```
+
+### ⚠️ 容器必须设时区，否则看板上的时刻全错
+
+容器默认跑在 **UTC**，而画面上的时刻都是服务端渲染的 ——
+不设的话「更新于 10:10」会印成「02:10」，**早 8 小时**。
+
+这个坑很难查，因为每一环看着都没问题：
+
+| 检查 | 结果 |
+|---|---|
+| 容器时钟 | 准（HTTP Date 头与本机只差 1 秒） |
+| 时间戳 | 对（标准 UTC 秒） |
+| **显示** | **错（早 8 小时）** |
+
+设 `TZ` 就行；也可以在管理页把 `display.timezone` 设成
+`Asia/Shanghai`（优先级更高，改完即时生效、不用重建容器）。
+
+> 固定偏移（`+08:00`）不依赖 tzdata，容器里更保险。
+> IANA 名字（`Asia/Shanghai`）需要 `tzdata` 包 —— 它已经是运行时依赖。
+
+`warden doctor` 会报当前用的时区。
 
 ### ⚠️ `KINDLEWARDEN_PUBLIC_HOST` 必须设对
 

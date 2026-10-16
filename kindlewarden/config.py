@@ -113,6 +113,18 @@ class DisplayConfig:
     #: 但 6 条会让版面发挤、没了呼吸，5 条是平衡点。
     landscape_max_briefs: int = 5
 
+    #: 渲染时刻用的时区。空 = 跟进程本地时区。
+    #:
+    #: ⚠️ **容器部署必须设**，否则所有时刻都早 8 小时（Docker 默认 UTC）。
+    #:
+    #: 实测：服务跑在容器的 UTC 里，看板上印 "02:10" 而北京时间是 "10:10"。
+    #: 这个坑很难查 —— 容器时钟是准的、时间戳也是标准 UTC 秒，
+    #: 只有"渲染成文字"那一步用了错的时区。
+    #:
+    #: 接受 IANA 名（``Asia/Shanghai``）或固定偏移（``+08:00``、``UTC``）。
+    #: 固定偏移不依赖系统 tzdata，容器里更保险。
+    timezone: str = ""
+
 
 @dataclass
 class ServerConfig:
@@ -198,7 +210,8 @@ EDITABLE: dict[str, tuple[str, ...]] = {
               "failed_retention_h", "show_info"),
     "ambient": ("weather", "show_clock"),
     "browser": ("viewport_w", "viewport_h"),
-    "display": ("night", "landscape", "rotate", "landscape_max_briefs"),
+    "display": ("night", "landscape", "rotate", "landscape_max_briefs",
+                "timezone"),
     "server": ("heartbeat_min", "poll_idle_s", "poll_active_s"),
 }
 
@@ -314,6 +327,11 @@ def to_toml(cfg: Config) -> str:
               "# 单行条目 84px，弹性区最多放得下 6 条；6 条会发挤，5 条是平衡点。",
               f"landscape_max_briefs = "
               f"{_toml_value(cfg.display.landscape_max_briefs)}",
+              "# 渲染时刻用的时区。**容器部署必须设**（Docker 默认 UTC，",
+              "# 会让画面上所有时刻早 8 小时）。",
+              '# 例：timezone = "Asia/Shanghai" 或固定偏移 "+08:00"。',
+              "# 留空 = 跟进程本地时区。",
+              f"timezone = {_toml_value(cfg.display.timezone)}",
               ""]
 
     lines += ["", "[server]",

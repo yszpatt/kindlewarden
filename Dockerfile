@@ -23,7 +23,22 @@ RUN apt-get update \
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    KINDLEWARDEN_DATA=/data
+    KINDLEWARDEN_DATA=/data \
+    TZ=Asia/Shanghai
+
+# ⚠️ ``TZ`` 是**必须**的，不是可选项。
+#
+# 容器默认跑在 UTC，而画面上所有时刻都由服务端渲染 ——
+# 不设 TZ 的话，看板上的「更新于 10:10」会印成「02:10」，
+# 比北京时间早 8 小时。实测踩过这个坑，而且**很难查**：
+#   * 容器时钟是准的（HTTP Date 头与本机只差 1 秒）
+#   * 时间戳也是标准 UTC 秒
+#   * 只有"渲染成文字"那一步用了错的时区
+#
+# 除了 TZ，服务自己也有 ``display.timezone`` 配置项（优先级更高），
+# 两条路都留着：TZ 管整个进程，配置项则可以在管理页里改、不用重建容器。
+#
+# 想要别的时区就改这里，或者设 ``display.timezone``。
 
 WORKDIR /app
 
