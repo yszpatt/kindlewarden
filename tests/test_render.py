@@ -542,18 +542,33 @@ def test_landscape_project_tag_is_black(fonts):
     )
 
 
-def test_portrait_meta_line_keeps_the_project_readable(fonts):
-    """竖屏的项目名在第二行，和摘要一起 —— 那条线**仍然保持弱化**。
+def test_portrait_project_tag_is_black_but_summary_stays_weak(fonts):
+    """竖屏的项目名也要**纯黑**，但摘要必须保持弱化的灰。
 
-    竖屏第二行是 ``project · summary`` 的信息行，
-    本来就该弱于标题（层级靠位置和字号）。这次改动只针对**横屏**，
-    不要把竖屏也一起改成黑的 —— 那会让整版失去层次。
+    用户第一次说"项目名改成黑色"，我只改了横屏；
+    用户随即指出「竖屏也要改呀」—— 竖屏显示得同样弱。
+
+    竖屏第二行的结构是「项目名 · 摘要」，原来是
+    ``" · ".join(...)`` 拼成**一个字符串**用一种颜色画 ——
+    所以两者层级被拉平了。现在拆成两段分别画：
+
+        项目名  BLACK（归属标注，用户要求强调）
+        分隔符  跟项目名同色
+        摘要    GRAY（正文的补充，保持弱化）
+
+    判据是**两个像素值**：项目名段最暗 0，摘要段最暗 > 0。
+    只测"有黑色"是不够的 —— 那样摘要也变黑照样能通过，
+    而整版会失去主次。
     """
-    from kindlewarden import layout, render
+    from PIL import ImageDraw
 
+    from kindlewarden import layout, render
+    from kindlewarden.render import (F_BRIEF_META, TEXT_W, TEXT_X, _tw)
+
+    project, summary = "backend-service", "这是一条摘要内容"
     board = Board(
         briefs=[Brief(id="b1", ts=TS, status="ok", title="标题",
-                      summary="摘要", project="backend-service")],
+                      summary=summary, project=project)],
         todos=[Todo(id="t1", ts=TS, text="待办")],
         total_briefs=1, total_todos=1)
 
@@ -565,14 +580,31 @@ def test_portrait_meta_line_keeps_the_project_readable(fonts):
 
     z = lay.briefs
     px = img.load()
-    vals = [px[x, y]
-            for x in range(layout.MARGIN, layout.CANVAS_W - layout.MARGIN, 2)
-            for y in range(z.y + 66, z.y + 104)]
-    darkest = min(vals)
-    assert darkest != 0, (
-        "竖屏第二行变成了纯黑 —— 那是标题的层级，"
-        "整版会失去主次（这次改动只该动横屏）"
+    y0, y1 = z.y + 66, z.y + 66 + 40
+
+    d = ImageDraw.Draw(img)
+    meta_f = fonts.get(F_BRIEF_META)
+    proj_w = _tw(d, project, meta_f)
+    sep_w = _tw(d, " · ", meta_f)
+
+    # 按**已知宽度**取两段，比按空白切可靠（汉字间距太小）
+    a0, a1 = TEXT_X, int(TEXT_X + proj_w)
+    b0, b1 = int(TEXT_X + proj_w + sep_w), int(TEXT_X + TEXT_W)
+
+    proj_dark = min(px[x, y] for x in range(a0, a1) for y in range(y0, y1))
+    summ_vals = [px[x, y] for x in range(b0, b1) for y in range(y0, y1)]
+    summ_ink = sum(1 for v in summ_vals if v < 250)
+
+    assert proj_dark == 0, (
+        f"竖屏项目名最暗 {proj_dark}，不是纯黑（0）—— "
+        f"用户明确要求竖屏也强调"
     )
+    if summ_ink:
+        summ_dark = min(summ_vals)
+        assert summ_dark > 0, (
+            "竖屏摘要也变成了纯黑 —— 它该保持弱化，"
+            "否则和项目名抢层级，整版失去主次"
+        )
 
 
 def test_landscape_project_tag_disappears_when_absent(fonts):

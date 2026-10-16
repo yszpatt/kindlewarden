@@ -751,11 +751,19 @@ def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -
     suffix = "（有遗留）" if b.status == "partial" else ""
     title_color = GRAY if b.status == "info" else BLACK
     meta_color = LGRAY if b.status == "info" else GRAY
-    #: 横屏项目名的颜色。info 状态的简报整体弱化，所以跟着用灰。
+    #: 项目名的颜色 —— **两个方向都是黑色**，用户明确要求强调。
+    #:
+    #: 原先是弱化的灰，理由是"归属标注不该抢戏"。但实看下来太弱：
+    #: 横屏字号 30（标题 44），竖屏更是和摘要同级，
+    #: 在电子墨水的对比度下几乎成了背景纹理 —— **扫不到**。
+    #: 而它要回答的恰恰是"这条是哪个项目报的"，扫不到等于没显示。
+    #:
+    #: 层级现在靠**字号和位置**区分，不再靠颜色压制。
+    #: info 状态的简报整体弱化，所以那种情况下仍跟着用灰。
     proj_color = GRAY if b.status == "info" else BLACK
 
     if two_line:
-        # ---- 竖屏：两行。项目名跟摘要在第二行
+        # ---- 竖屏：两行。第二行是「项目名 · 摘要」
         title_y, stamp_y = y + 4, y + 16
         d.text((TEXT_X, title_y),
                _fit(d, b.title + suffix, title_f, TEXT_W - stamp_block),
@@ -763,12 +771,36 @@ def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -
         _right(d, MARGIN + CONTENT_W, stamp_y, stamp, time_f, LGRAY)
 
         meta_f = f.get(F_BRIEF_META)
-        meta = " · ".join(x for x in (b.project, b.summary) if x)
-        if meta:
+        # ⚠️ 项目名和摘要要**分开画**，不能用 " · ".join 拼成一个字符串。
+        #
+        # 拼成一个串就只能用一种颜色 —— 而两者的层级不同：
+        # 项目名是**归属标注**（用户明确要求强调，黑色），
+        # 摘要是正文的补充（保持弱化的灰）。
+        #
+        # 分成两段画之后，分隔符 " · " 也跟着项目名的颜色走，
+        # 读起来是「[项目] · 摘要」而不是糊成一团。
+        #
+        # ⚠️ 摘要的宽度要把项目名那段**扣掉** —— 否则两者会重叠。
+        #    这和横屏那边扣掉时间戳宽度是同一个道理。
+        meta_gap = " · "
+        sep_w = _tw(d, meta_gap, meta_f) if (b.project and b.summary) else 0.0
+        proj_txt = _fit(d, b.project, meta_f, TEXT_W * 0.4) if b.project else ""
+        proj_w = (_tw(d, proj_txt, meta_f) + sep_w) if proj_txt else 0.0
+
+        x = TEXT_X
+        if proj_txt:
+            d.text((x, y + 66), proj_txt, font=meta_f, fill=proj_color)
+            x += _tw(d, proj_txt, meta_f)
+            if sep_w:
+                d.text((x, y + 66), meta_gap, font=meta_f, fill=meta_color)
+                x += sep_w
+        if b.summary:
             # ⚠️ _fit 会**压成单行**再截断（它必须这么做 ——
             #    否则 d.text 遇到 \n 会画多行，溢出这条固定高度的条目）。
-            d.text((TEXT_X, y + 66), _fit(d, meta, meta_f, TEXT_W),
-                   font=meta_f, fill=meta_color)
+            rest = TEXT_X + TEXT_W - x
+            if rest > 0:
+                d.text((x, y + 66), _fit(d, b.summary, meta_f, rest),
+                       font=meta_f, fill=meta_color)
     else:
         # ---- 横屏：单行。右侧依次是「项目名」「时间戳」
         title_y = y + (h - 49) // 2
