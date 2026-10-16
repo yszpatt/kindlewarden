@@ -725,6 +725,16 @@ def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -
 
     横屏放右边而不是放到标题前面：标题的左边缘要和待办共用同一条文字线
     （那是整版"规整"的主要来源），在它前面插东西会把这条线打断。
+
+    ⚠️ 横屏的项目名用 **BLACK**（和标题同色），不是弱化的灰。
+
+    原来给的是 ``meta_color``（LGRAY/GRAY）—— 理由是"归属标注不该抢戏"。
+    但实看下来太弱：它的字号只有 30（标题 44），再配浅灰，
+    在电子墨水的对比度下几乎成了背景纹理，**扫不到**。
+    而它要回答的恰恰是"这条是哪个项目报的"—— 扫不到就等于没显示。
+
+    所以改成黑色：字号仍然小、位置仍然在右侧，**层级靠字号和位置**区分，
+    不再靠颜色压制。实测这样一眼就能扫到项目归属。
     """
     title_f = f.get(F_BRIEF_TITLE, True)
     two_line = h >= BRIEF_TWO_LINE_MIN_H
@@ -741,6 +751,8 @@ def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -
     suffix = "（有遗留）" if b.status == "partial" else ""
     title_color = GRAY if b.status == "info" else BLACK
     meta_color = LGRAY if b.status == "info" else GRAY
+    #: 横屏项目名的颜色。info 状态的简报整体弱化，所以跟着用灰。
+    proj_color = GRAY if b.status == "info" else BLACK
 
     if two_line:
         # ---- 竖屏：两行。项目名跟摘要在第二行
@@ -778,7 +790,7 @@ def _draw_brief(d: ImageDraw.ImageDraw, b: Brief, y: int, h: int, f: FontBook) -
             # 贴着时间戳左侧放（时间戳块宽 = 文字宽 + 24 的留白）
             proj_right = MARGIN + CONTENT_W - stamp_block - PROJECT_GAP
             d.text((proj_right - _tw(d, proj_txt, proj_f), stamp_y),
-                   proj_txt, font=proj_f, fill=meta_color)
+                   proj_txt, font=proj_f, fill=proj_color)
 
     d.line([(MARGIN, y + h - 8), (MARGIN + CONTENT_W, y + h - 8)], fill=RULE, width=1)
 

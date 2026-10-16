@@ -494,6 +494,87 @@ def test_brief_project_is_shown_in_landscape(fonts):
     )
 
 
+def test_landscape_project_tag_is_black(fonts):
+    """横屏的项目名要用 **BLACK**，不是弱化的灰。
+
+    用户反馈：「项目名称的字体 强调下吧 改成黑色」。
+
+    原来给的是 ``meta_color``（LGRAY/GRAY）—— 理由是"归属标注不该抢戏"。
+    但实看下来太弱：字号只有 30（标题 44），再配浅灰，
+    在电子墨水的对比度下几乎成了背景纹理，**扫不到**。
+    而它要回答的恰恰是"这条是哪个项目报的"—— 扫不到等于没显示。
+
+    判据用**像素的最暗值**，不是"我改了哪个常量"：
+      旧 GRAY   → 最暗 119
+      新 BLACK  → 最暗   0
+    """
+    from kindlewarden import layout, render
+
+    board = Board(
+        briefs=[Brief(id="b1", ts=TS, status="ok", title="标题",
+                      summary="摘要", project="backend-service")],
+        todos=[Todo(id="t1", ts=TS, text="待办")],
+        total_briefs=1, total_todos=1)
+
+    render.set_canvas(layout.DEVICE_H, layout.DEVICE_W)
+    try:
+        img, lay = render_board(board, Config(), now=TS, fonts=fonts)
+    finally:
+        render.reset_canvas()
+
+    z = lay.briefs
+    px = img.load()
+    segs = _row_segments(px, layout.DEVICE_H, z.y, z.y + z.item_h)
+    assert len(segs) >= 3, f"段太少，定位不到项目名：{segs}"
+
+    proj_seg = segs[-2]
+    y0 = z.y
+    y1 = z.y + z.item_h - 10          # 避开底部分隔线
+    vals = [px[x, y]
+            for x in range(proj_seg[0], proj_seg[1] + 1)
+            for y in range(y0, y1)]
+
+    darkest = min(vals)
+    assert darkest == 0, (
+        f"项目名区域最暗值 {darkest}，不是纯黑（0）—— "
+        f"119 是 GRAY、153 是 LGRAY，说明还是弱化色。"
+        "它是用来标「哪条是哪个项目」的，扫不到就等于没显示。"
+    )
+
+
+def test_portrait_meta_line_keeps_the_project_readable(fonts):
+    """竖屏的项目名在第二行，和摘要一起 —— 那条线**仍然保持弱化**。
+
+    竖屏第二行是 ``project · summary`` 的信息行，
+    本来就该弱于标题（层级靠位置和字号）。这次改动只针对**横屏**，
+    不要把竖屏也一起改成黑的 —— 那会让整版失去层次。
+    """
+    from kindlewarden import layout, render
+
+    board = Board(
+        briefs=[Brief(id="b1", ts=TS, status="ok", title="标题",
+                      summary="摘要", project="backend-service")],
+        todos=[Todo(id="t1", ts=TS, text="待办")],
+        total_briefs=1, total_todos=1)
+
+    render.set_canvas(layout.DEVICE_W, layout.DEVICE_H)
+    try:
+        img, lay = render_board(board, Config(), now=TS, fonts=fonts)
+    finally:
+        render.reset_canvas()
+
+    z = lay.briefs
+    px = img.load()
+    vals = [px[x, y]
+            for x in range(layout.MARGIN, layout.CANVAS_W - layout.MARGIN, 2)
+            for y in range(z.y + 66, z.y + 104)]
+    darkest = min(vals)
+    assert darkest != 0, (
+        "竖屏第二行变成了纯黑 —— 那是标题的层级，"
+        "整版会失去主次（这次改动只该动横屏）"
+    )
+
+
 def test_landscape_project_tag_disappears_when_absent(fonts):
     """**反面对照**：没有项目名时，标题与时间戳之间就该是空的。
 
